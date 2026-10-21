@@ -1,0 +1,60 @@
+# Esempio di configurazione di SAGE. Nessun valore qui è un default del codice:
+# copialo, adattalo al tuo cluster e validalo con `sage check-config --config ...`.
+#
+# Dentro il cluster questo file arriva dal chart Helm (values.yaml → ConfigMap).
+
+ssh:
+  user: UTENTE_SSH                       # utente sui nodi, con sudo
+  key_path: /etc/sage/ssh/id_ed25519     # chiave dedicata a SAGE (Secret montato)
+  known_hosts_path: /etc/sage/ssh/known_hosts
+
+llm:
+  timeout_seconds: 60
+  endpoints:                             # provati in ordine; vuoto = solo regole fisse
+    - name: locale-primario
+      base_url: http://vllm.sage.svc:8000/v1
+      model: openai/gpt-oss-120b
+      minimize_data: false               # interno: può vedere il contesto completo
+    - name: groq
+      base_url: https://api.groq.com/openai/v1
+      model: openai/gpt-oss-120b
+      api_key_env: GROQ_API_KEY          # nome della variabile, mai la chiave
+      minimize_data: true                # esterno: niente IP, hostname, nomi interni
+
+groups:                                  # i nodi fuori da ogni gruppo non vengono toccati
+  - name: worker
+    selector: sage.io/group=worker       # label selector Kubernetes
+    order: 1                             # ordine delle ondate
+    canary: NOME_NODO_CANARY
+    concurrency: 1
+    kernel: auto                         # auto | window | manual
+    drain: evict                         # evict | wait-empty
+    allow_remove: true
+  - name: gpu
+    selector: sage.io/group=gpu
+    order: 2
+    canary: NOME_NODO_GPU_CANARY
+    kernel: manual                       # kernel insieme al driver NVIDIA
+    drain: wait-empty                    # aspetta la fine dei job lunghi
+  - name: gpu-llm
+    selector: sage.io/group=gpu-llm
+    order: 3
+    kernel: window
+    window: "sat 02:00-06:00"
+    requires_fallback: true              # si tocca solo con una riserva LLM attiva
+  - name: master
+    selector: node-role.kubernetes.io/control-plane
+    order: 4
+    kernel: window
+    window: "sat 02:00-06:00"
+
+policy:
+  protected_packages:                    # mai rimossi, qualunque cosa proponga l'LLM
+    - "kernel*"
+    - glibc
+    - systemd
+    - dnf
+    - rpm
+    - sudo
+    - "openssh*"
+    - NetworkManager

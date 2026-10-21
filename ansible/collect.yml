@@ -1,0 +1,45 @@
+# Raccolta: pacchetti con advisory di sicurezza, CVE e contesto di ogni nodo.
+#
+# Lanciato da `sage scan` dentro il cluster, oppure a mano dal bastion in emergenza:
+#   ansible-playbook -i inventory.ini collect.yml -e sage_out_dir=/percorso/output
+#
+# Variabili:
+#   sage_out_dir  (obbligatoria) cartella in cui salvare <nodo>.json
+#   sage_targets  (opzionale)    gruppo o pattern di host, default: all
+- name: Raccolta dai nodi
+  hosts: "{{ sage_targets | default('all') }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Verifica le variabili obbligatorie
+      ansible.builtin.assert:
+        that:
+          - sage_out_dir is defined
+          - sage_out_dir | length > 0
+        fail_msg: "sage_out_dir è obbligatoria (-e sage_out_dir=...)"
+      run_once: true
+      delegate_to: localhost
+
+    - name: Crea la cartella di output
+      ansible.builtin.file:
+        path: "{{ sage_out_dir }}"
+        state: directory
+        mode: "0755"
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: Esegui il collector sul nodo
+      ansible.builtin.script:
+        cmd: files/collect_node.py
+        executable: python3
+      register: collected
+      changed_when: false
+
+    - name: Salva il report del nodo
+      ansible.builtin.copy:
+        content: "{{ collected.stdout }}"
+        dest: "{{ sage_out_dir }}/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false

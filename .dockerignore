@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+**/__pycache__
+data
+docs
+tests
+examples
+chart
+*.ini
+!ansible/inventory.example.ini
+values-local*.yaml
+.env

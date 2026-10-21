@@ -1,0 +1,10 @@
+{{- include "sage.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sage.fullname" . }}-config
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}

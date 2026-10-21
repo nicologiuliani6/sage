@@ -1,0 +1,45 @@
+# Valori del chart. Nessun valore specifico di un cluster: quelli obbligatori sono
+# vuoti e l'installazione fallisce finché non li imposti nel tuo file di valori
+# (es. values-local.yaml, da non committare).
+
+image:
+  repository: ""            # OBBLIGATORIO, es. ghcr.io/<owner>/sage
+  digest: ""                # consigliato: sha256:... (se impostato, ignora tag)
+  tag: ""                   # usato solo se digest è vuoto
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []        # es. [{name: ghcr-pull}] se l'immagine è privata
+
+schedule: "0 */6 * * *"
+timeZone: ""                # es. "Europe/Rome"; vuoto = fuso del controller
+suspend: true               # il CronJob nasce sospeso
+dryRun: true                # nessuna modifica ai nodi finché non lo disattivi
+activeDeadlineSeconds: 10800
+
+secrets:
+  ssh: sage-ssh             # Secret con le chiavi id_ed25519 e known_hosts
+  llm: ""                   # Secret con le chiavi API degli endpoint LLM (opzionale)
+
+# Diventa /etc/sage/config/config.yaml. Schema e commenti in examples/config.example.yaml.
+config:
+  ssh:
+    user: ""                # OBBLIGATORIO: utente SSH sui nodi
+    key_path: /etc/sage/ssh/id_ed25519
+    known_hosts_path: /etc/sage/ssh/known_hosts
+  llm:
+    timeout_seconds: 60
+    endpoints: []           # vuoto = solo regole deterministiche
+  groups: []                # OBBLIGATORIO: almeno un gruppo di nodi
+  policy:
+    protected_packages: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

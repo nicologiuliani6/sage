@@ -1,0 +1,101 @@
+{{- include "sage.validate" . }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "sage.fullname" . }}-scan
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  {{- with .Values.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  suspend: {{ .Values.suspend }}
+  # Al massimo un'istanza alla volta: niente leader election da gestire.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "sage.labels" . | nindent 12 }}
+            app.kubernetes.io/component: scan
+        spec:
+          serviceAccountName: {{ include "sage.fullname" . }}
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sage
+              image: {{ include "sage.image" . | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              args:
+                - scan
+                - --config
+                - /etc/sage/config/config.yaml
+                {{- if .Values.dryRun }}
+                - --dry-run
+                {{- end }}
+              {{- if .Values.secrets.llm }}
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.secrets.llm }}
+              {{- end }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/sage/config
+                  readOnly: true
+                - name: ssh
+                  mountPath: /etc/sage/ssh
+                  readOnly: true
+                - name: work
+                  mountPath: /var/lib/sage
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: config
+              configMap:
+                name: {{ include "sage.fullname" . }}-config
+            - name: ssh
+              secret:
+                secretName: {{ .Values.secrets.ssh }}
+                # Leggibile dal gruppo (fsGroup): sage copia la chiave in /tmp con
+                # permessi 0600 prima di usarla, come richiede OpenSSH.
+                defaultMode: 0440
+            - name: work
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

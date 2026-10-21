@@ -1,0 +1,12 @@
+# Valori fittizi usati solo dalla CI per verificare che il chart si renderizzi.
+image:
+  repository: registry.example/sage
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+config:
+  ssh:
+    user: test-user
+  groups:
+    - name: worker
+      selector: sage.io/group=worker
+      order: 1
+      kernel: auto

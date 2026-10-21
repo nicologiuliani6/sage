@@ -1,0 +1,17 @@
+# Ambiente
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Dati e configurazioni locali: mai nella repo
+data/
+.env
+*.env
+values-local*.yaml
+ansible/inventory.ini
+*.key
+id_*
+!id_*.pub
+known_hosts
