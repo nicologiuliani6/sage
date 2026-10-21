@@ -1,47 +1,36 @@
 # Roadmap
 
-## M0: repo, CI, immagine
-- [x] Struttura, `pyproject` con dipendenze pinnate (`uv.lock`)
-- [x] Configurazione validata, nessun valore hardcoded
-- [x] Collector (dal prototipo), compatibile con Python 3.9
-- [x] Policy OPA iniziale con test
-- [x] Chart Helm con valori obbligatori bloccanti
-- [x] CI: test, lint, policy, chart, build immagine, gitleaks
-- [ ] Prima immagine su GHCR e digest annotato
-- [ ] Immagine base pinnata per digest
+## Fatto
 
-## M1: cluster gemello in HA
+- [x] **M0** repo, configurazione validata senza hardcoding, CI, immagine, chart
+- [x] **M2** scan nel cluster: inventario dall'API Kubernetes, gruppi, raccolta via SSH
+- [x] **M4** livello LLM: catena di endpoint, cache, schema, budget, solo dati pubblici
+- [x] **M4** verifica delle condizioni sul nodo (moduli, servizi, uso) con controlli di coerenza
+- [x] **M5** decisione OPA (fail closed, KEV, rimozione e mitigazione sicure), priorità, report, VEX
+- [x] **M6** remediation a ondate: Job per nodo, canary e osservazione, concorrenza, finestre,
+      riserva LLM, rollback, stop e `sage resume`
+
+## Da fare
+
+### Test sul gemello ([guida](test-gemello.md))
+- [ ] Prima immagine su GHCR, digest nei valori
+- [ ] Giri in simulazione, lettura delle decisioni
+- [ ] Remediation vera sul canary
+
+### Cluster gemello in HA (M1)
 - [ ] 3 master con etcd, bastion dedicato
 - [ ] Nodo GPU (in attesa: API del modello o server da gestire?)
-- [ ] Label dei gruppi sui nodi
 
-## M2: scan nel cluster
-- [ ] `sage scan`: inventario dall'API Kubernetes, `collect.yml` via SSH
-- [ ] Report dei nodi salvati in ConfigMap
-- [ ] Chiave SSH dedicata, `known_hosts` gestito
+### Applicabilità deterministica (M3)
+- [ ] Livello versione: Red Hat CSAF VEX (`known_not_affected`) per le CVE delle advisory
+- [ ] Livello configurazione kernel: file colpiti e configurazione compilata del nodo
 
-## M3: applicabilità deterministica
-- [ ] Livello versione: dati della distribuzione (advisory, Red Hat CSAF VEX)
-- [ ] Livello configurazione kernel: file colpiti dalla CVE e configurazione del nodo
-- [ ] Collector: config kernel, moduli caricati e disponibili, denylist, sysctl
-
-## M4: livello LLM
-- [ ] Estrazione delle condizioni in JSON con schema
-- [ ] Verifica delle condizioni sul nodo
-- [ ] Catena di endpoint, modalità sicura, cache delle decisioni
-- [ ] Minimizzazione dei dati verso endpoint esterni
-
-## M5: decisione (demo)
-- [ ] SSVC (certcc-ssvc, CISA Vulnrichment), KEV, EPSS
-- [ ] OPA collegata ai dati reali
-- [ ] Piano e VEX in sola simulazione
-
-## M6: remediation
-- [ ] `remediate.yml`: drain, azioni, riavvio, health check, rollback
-- [ ] Job per nodo, ondate per gruppo, canary
-- [ ] Regole del gruppo LLM: riserva verificata, prompt di prova
-
-## M7: valutazione
-- [ ] Confronto con dnf-automatic (security)
-- [ ] Accordo con le decisioni di un esperto
+### Valutazione (M7)
+- [ ] Confronto con dnf-automatic (security): quanti aggiornamenti, quanti riavvii evitati
+- [ ] Accordo con le decisioni di un esperto su un campione
 - [ ] Stabilità delle risposte del modello
+
+### Miglioramenti
+- [ ] Immagine base pinnata per digest
+- [ ] Prompt di prova sull'LLM come controllo di salute del gruppo LLM (oggi: `health_urls`)
+- [ ] Integrazione con `certcc-ssvc` per l'albero SSVC completo

@@ -12,12 +12,15 @@
 - **Solo componenti gratuiti e open source**, pinnati: hash in `uv.lock`, Actions per SHA, binari con
   checksum, immagini per digest (ADR-0008).
 - `ansible/files/collect_node.py` gira sui nodi con **Python 3.9 e sola libreria standard**.
+- L'LLM riceve **solo dati pubblici della CVE**: mai dati dei nodi nel prompt (ADR-0004).
+- Le condizioni dell'LLM valgono solo con verifica sul nodo e controllo di coerenza (ADR-0001).
+- Le espressioni Jinja dei playbook vanno provate con dati finti: niente backslash nei pattern.
 
 ## Comandi
 
 ```bash
 uv sync
-uv run pytest
+SAGE_OPA_BIN=$(which opa) uv run pytest      # senza opa i test d'integrazione vengono saltati
 uv run ruff check . && uv run ruff format --check .
 opa test policy -v && opa fmt --list --fail policy     # sintassi OPA v1
 uv run sage check-config --config examples/config.example.yaml

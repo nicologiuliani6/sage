@@ -86,3 +86,13 @@ def test_all_errors_reported_together():
 def test_policy_data_comes_from_config():
     cfg = config.parse(minimal(policy={"protected_packages": ["glibc", "kernel*"]}))
     assert cfg.to_policy_data() == {"protected_packages": ["glibc", "kernel*"]}
+
+
+def test_helm_values_example_contains_valid_config():
+    import yaml
+
+    values = yaml.safe_load((EXAMPLE.parent / "values.example.yaml").read_text())
+    raw = values["config"]
+    raw["ssh"].setdefault("key_path", "/etc/sage/ssh/id_ed25519")  # default del chart
+    cfg = config.parse(raw)
+    assert [g.name for g in cfg.groups] == ["worker", "master"]

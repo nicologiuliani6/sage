@@ -1,7 +1,7 @@
 # Valori del chart. Nessun valore specifico di un cluster: quelli obbligatori sono
 # vuoti e l'installazione fallisce finché non li imposti nel tuo file di valori
 # (es. values-local.yaml, da non committare). Esempio completo in
-# examples/values-local.example.yaml.
+# examples/values.example.yaml.
 
 image:
   repository: ""            # OBBLIGATORIO, es. ghcr.io/<owner>/sage

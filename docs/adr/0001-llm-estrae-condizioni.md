@@ -15,13 +15,23 @@ locale" significa qualsiasi pod.
 
 ## Decisione
 
-L'LLM non restituisce un verdetto ma un elenco di **condizioni verificabili** in JSON con schema
-(es. `kernel_module_loadable`, `service_listening`). SAGE le verifica sul nodo. `not_affected` vale
-solo se una condizione necessaria è falsa e verificata; se una condizione non è verificabile, la CVE
-è considerata applicabile. Un modulo non caricato conta come sicuro solo se anche bloccato.
+L'LLM non restituisce un verdetto ma un elenco di **condizioni necessarie**, da un catalogo chiuso
+(`kernel_module`, `network_service`, `component_in_use`), in JSON validato da schema. SAGE le
+verifica sul nodo con controlli di coerenza indipendenti dall'LLM:
+
+- `kernel_module`: il modulo deve contenere i file sorgente colpiti dalla CVE (dal record del CNA
+  del kernel). Conta come falsa solo se il modulo è bloccato (`install /bin/false`) o il
+  caricamento è disabilitato; "non caricato" non basta.
+- `network_service`: accettata solo se il vettore CVSS è di rete.
+- `component_in_use`: non accettata per pacchetti con file setuid, setgid o con capability.
+- "inutilizzato" deve valere per `idle_scans_required` scansioni consecutive, non per un'istantanea.
+
+`not_affected` vale solo se una condizione è falsa e verificata, per tutte le CVE del pacchetto.
+Una condizione non verificabile rende la CVE applicabile.
 
 ## Conseguenze
 
 - Il ruolo dell'LLM è circoscritto e misurabile (estrazione di condizioni).
-- Ogni `not_affected` ha una prova (comando e output) registrata nel VEX.
-- Serve un catalogo di tipi di condizione che il collector sa verificare; cresce nel tempo.
+- Ogni `not_affected` ha una prova registrata nel VEX.
+- Il catalogo delle condizioni cresce solo insieme a una verifica sul nodo e a un controllo di
+  coerenza.

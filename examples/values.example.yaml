@@ -1,0 +1,47 @@
+# Esempio di valori per installare SAGE su un cluster di test.
+# Copialo FUORI dalla repo (es. sul bastion) come values-local.yaml e compila i segnaposto.
+#   helm install sage chart/sage -n sage -f values-local.yaml
+
+image:
+  repository: ghcr.io/OWNER/sage
+  digest: sha256:DIGEST_DAL_RIEPILOGO_DELLA_ACTION_IMAGE
+
+timeZone: Europe/Rome          # fuso del CronJob
+suspend: true                  # primo giro a mano: kubectl create job --from=cronjob/sage-scan
+dryRun: true                   # simulazione finché le decisioni non convincono
+
+secrets:
+  ssh: sage-ssh
+  llm: sage-llm
+
+# extraEnv:                    # se i pod escono su Internet tramite proxy
+#   - {name: HTTPS_PROXY, value: "http://PROXY:3128"}
+#   - {name: NO_PROXY, value: "10.0.0.0/8,.svc,.cluster.local"}
+
+config:
+  timezone: Europe/Rome
+  ssh:
+    user: UTENTE_SSH
+  llm:
+    min_interval_seconds: 2.5
+    endpoints:
+      - name: groq
+        base_url: https://api.groq.com/openai/v1
+        model: openai/gpt-oss-120b
+        api_key_env: GROQ_API_KEY
+  groups:
+    - name: worker
+      selector: sage.io/group=worker
+      order: 1
+      canary: NOME_NODO_CANARY
+      kernel: auto
+      allow_remove: false        # attivali dopo aver visto qualche giro di simulazione
+      allow_mitigate: false
+    - name: master
+      selector: node-role.kubernetes.io/control-plane
+      order: 2
+      kernel: window
+      window: "sat 02:00-06:00"
+  policy:
+    protected_packages: ["kernel*", glibc, systemd, dnf, rpm, sudo, "openssh*", NetworkManager]
+    protected_modules: ["nf_*", "ip_*", "ip6_*", br_netfilter, overlay, vxlan, veth, "xt_*"]

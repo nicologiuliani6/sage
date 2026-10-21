@@ -14,9 +14,10 @@ Si era ipotizzata una doppia scansione (dnf e Trivy) come controprova. Verifiche
 
 ## Decisione
 
-- Pacchetti RPM: advisory della distribuzione via dnf, confrontate con i dati Red Hat (CSAF VEX) per
-  lo stato `known_not_affected`.
-- CVE del kernel: record del CNA del kernel (file sorgente colpiti) per il controllo di configurazione.
+- Pacchetti RPM: advisory della distribuzione via dnf. Il confronto con i dati Red Hat (CSAF VEX,
+  stato `known_not_affected`) è previsto ma non ancora implementato.
+- Record CVE dal CVE Program: descrizione, vettore CVSS e, per il kernel, i file sorgente colpiti
+  (usati per verificare la coerenza delle condizioni sui moduli).
 - Contesto di rischio: CISA KEV, CISA Vulnrichment (decision point SSVC), FIRST EPSS.
 - Componenti Kubernetes: fuori ambito di SAGE, gestiti con kubespray.
 
