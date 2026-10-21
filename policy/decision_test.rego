@@ -1,5 +1,6 @@
 package sage.decision_test
 
+import data.sage.batch
 import data.sage.decision
 
 config := {"protected_packages": ["glibc", "systemd", "openssh*"]}
@@ -8,112 +9,140 @@ idle_context := {
 	"binaries_running": [],
 	"libraries_loaded": [],
 	"listening": [],
-	"units": {"cockpit.socket": "inactive"},
+	"units": {"cockpit.socket": {"active": "inactive", "enabled": "disabled"}},
+	"removal_also_removes": [],
 }
 
 base := {
 	"node": {"group": "worker"},
-	"group": {"allow_remove": true, "kernel": "window"},
-	"package": {"name": "cockpit-ws", "context": idle_context, "removal_also_removes": []},
+	"group": {"allow_remove": false, "allow_mitigate": false, "kernel": "window"},
+	"kev_available": true,
+	"package": {"name": "cockpit-ws", "context": idle_context, "idle_confirmed": true},
 	"cves": [{"kev": false, "applicability": {"status": "affected", "verified": true}}],
-	"proposal": {"action": "update"},
+	"proposal": {},
 }
 
-test_default_is_update if {
-	decision.action == "update" with input as base with data.sage.config as config
+removable := object.union(base, {"group": {"allow_remove": true}})
+
+not_affected_cves := {"cves": [
+	{"kev": false, "applicability": {"status": "not_affected", "verified": true}},
+	{"kev": false, "applicability": {"status": "not_affected", "verified": true}},
+]}
+
+with_pkg(inp, changes) := object.union(inp, {"package": object.union(inp.package, changes)})
+
+with_ctx(inp, changes) := with_pkg(inp, {"context": object.union(inp.package.context, changes)})
+
+act(inp) := a if {
+	a := decision.action with input as inp with data.sage.config as config
 }
+
+# --- default e nodi senza gruppo
+
+test_default_is_update if act(base) == "update"
 
 test_node_without_group_is_skipped if {
-	inp := object.union(object.remove(base, ["node"]), {"node": {}})
-	decision.action == "skip" with input as inp with data.sage.config as config
+	act(object.union(object.remove(base, ["node"]), {"node": {}})) == "skip"
 }
 
-test_empty_group_is_skipped if {
-	inp := object.union(base, {"node": {"group": ""}})
-	decision.action == "skip" with input as inp with data.sage.config as config
+test_empty_group_is_skipped if act(object.union(base, {"node": {"group": ""}})) == "skip"
+
+# --- non affetto
+
+test_not_affected_when_all_verified if act(object.union(base, not_affected_cves)) == "not_affected"
+
+test_not_affected_requires_kev_catalog if {
+	act(object.union(object.union(base, not_affected_cves), {"kev_available": false})) == "update"
 }
 
 test_kev_wins_over_not_affected if {
 	inp := object.union(base, {"cves": [{"kev": true, "applicability": {"status": "not_affected", "verified": true}}]})
-	decision.action == "update" with input as inp with data.sage.config as config
-}
-
-test_not_affected_when_all_verified if {
-	inp := object.union(base, {"cves": [
-		{"kev": false, "applicability": {"status": "not_affected", "verified": true}},
-		{"kev": false, "applicability": {"status": "not_affected", "verified": true}},
-	]})
-	decision.action == "not_affected" with input as inp with data.sage.config as config
+	act(inp) == "update"
 }
 
 test_unverified_not_affected_falls_back_to_update if {
 	inp := object.union(base, {"cves": [{"kev": false, "applicability": {"status": "not_affected", "verified": false}}]})
-	decision.action == "update" with input as inp with data.sage.config as config
+	act(inp) == "update"
 }
 
 test_one_affected_cve_blocks_not_affected if {
 	inp := object.union(base, {"cves": [
 		{"kev": false, "applicability": {"status": "not_affected", "verified": true}},
-		{"kev": false, "applicability": {"status": "affected", "verified": true}},
+		{"kev": false, "applicability": {"status": "unknown", "verified": false}},
 	]})
-	decision.action == "update" with input as inp with data.sage.config as config
+	act(inp) == "update"
 }
 
-test_remove_when_idle if {
-	inp := object.union(base, {"proposal": {"action": "remove"}})
-	decision.action == "remove" with input as inp with data.sage.config as config
+test_no_cves_means_update if act(object.union(base, {"cves": []})) == "update"
+
+# --- rimozione
+
+test_remove_when_idle_and_allowed if act(removable) == "remove"
+
+test_remove_also_closes_kev if {
+	act(object.union(removable, {"cves": [{"kev": true, "applicability": {"status": "affected", "verified": true}}]})) == "remove"
 }
 
-test_no_remove_if_group_forbids if {
-	inp := object.union(base, {"proposal": {"action": "remove"}, "group": {"allow_remove": false, "kernel": "window"}})
-	decision.action == "update" with input as inp with data.sage.config as config
-}
+test_no_remove_if_group_forbids if act(base) == "update"
 
-test_no_remove_if_running if {
-	ctx := object.union(idle_context, {"binaries_running": ["/usr/libexec/cockpit-ws"]})
-	pkg := object.union(base.package, {"context": ctx})
-	inp := object.union(base, {"proposal": {"action": "remove"}, "package": pkg})
-	decision.action == "update" with input as inp with data.sage.config as config
-}
+test_no_remove_if_not_idle_long_enough if act(with_pkg(removable, {"idle_confirmed": false})) == "update"
+
+test_no_remove_if_running if act(with_ctx(removable, {"binaries_running": ["/usr/libexec/cockpit-ws"]})) == "update"
 
 test_no_remove_if_unit_active if {
-	ctx := object.union(idle_context, {"units": {"cockpit.socket": "active"}})
-	pkg := object.union(base.package, {"context": ctx})
-	inp := object.union(base, {"proposal": {"action": "remove"}, "package": pkg})
-	decision.action == "update" with input as inp with data.sage.config as config
+	act(with_ctx(removable, {"units": {"cockpit.socket": {"active": "active", "enabled": "disabled"}}})) == "update"
 }
 
-test_no_remove_if_it_drags_other_packages if {
-	pkg := object.union(base.package, {"removal_also_removes": ["sssd-common"]})
-	inp := object.union(base, {"proposal": {"action": "remove"}, "package": pkg})
-	decision.action == "update" with input as inp with data.sage.config as config
+test_no_remove_if_unit_enabled if {
+	act(with_ctx(removable, {"units": {"cockpit.socket": {"active": "inactive", "enabled": "enabled"}}})) == "update"
 }
 
-test_no_remove_if_protected_by_config if {
-	pkg := object.union(base.package, {"name": "openssh-server"})
-	inp := object.union(base, {"proposal": {"action": "remove"}, "package": pkg})
-	decision.action == "update" with input as inp with data.sage.config as config
+test_no_remove_if_it_drags_other_packages if act(with_ctx(removable, {"removal_also_removes": ["sssd-common"]})) == "update"
+
+test_no_remove_if_simulation_failed if act(with_ctx(removable, {"removal_also_removes": null})) == "update"
+
+test_no_remove_if_protected_by_config if act(with_pkg(removable, {"name": "openssh-server"})) == "update"
+
+test_kernel_never_removed if act(with_pkg(removable, {"name": "kernel-modules-extra"})) == "update"
+
+# --- mitigazione
+
+mitigable := object.union(base, {
+	"group": {"allow_mitigate": true},
+	"proposal": {"action": "mitigate", "mitigation": {"verified": true}},
+})
+
+test_mitigate_when_verified_and_allowed if act(mitigable) == "mitigate"
+
+test_no_mitigate_if_unverified if {
+	act(object.union(mitigable, {"proposal": {"mitigation": {"verified": false}}})) == "update"
 }
 
-test_mitigate_only_if_verified if {
-	ok := object.union(base, {"proposal": {"action": "mitigate", "mitigation": {"verified": true}}})
-	decision.action == "mitigate" with input as ok with data.sage.config as config
-	ko := object.union(base, {"proposal": {"action": "mitigate", "mitigation": {"verified": false}}})
-	decision.action == "update" with input as ko with data.sage.config as config
+test_no_mitigate_if_group_forbids if act(object.union(mitigable, {"group": {"allow_mitigate": false}})) == "update"
+
+test_no_mitigate_for_kev if {
+	act(object.union(mitigable, {"cves": [{"kev": true, "applicability": {"status": "affected", "verified": true}}]})) == "update"
 }
+
+# --- pianificazione del kernel
 
 test_kernel_schedule_follows_group if {
-	pkg := object.union(base.package, {"name": "kernel-core"})
-	win := object.union(base, {"package": pkg})
-	decision.schedule == "window" with input as win with data.sage.config as config
-	man := object.union(win, {"group": {"allow_remove": true, "kernel": "manual"}})
-	decision.schedule == "manual" with input as man with data.sage.config as config
-	auto := object.union(win, {"group": {"allow_remove": true, "kernel": "auto"}})
-	decision.schedule == "auto" with input as auto with data.sage.config as config
+	win := with_pkg(base, {"name": "kernel-core"})
+	decision.schedule == "window" with input as win
+	decision.schedule == "manual" with input as object.union(win, {"group": {"kernel": "manual"}})
+	decision.schedule == "auto" with input as object.union(win, {"group": {"kernel": "auto"}})
 }
 
-test_kernel_never_removed if {
-	pkg := object.union(base.package, {"name": "kernel-modules-extra"})
-	inp := object.union(base, {"proposal": {"action": "remove"}, "package": pkg})
-	decision.action == "update" with input as inp with data.sage.config as config
+test_userland_schedule_is_auto if decision.schedule == "auto" with input as base
+
+# --- valutazione a blocchi
+
+test_batch_keeps_order if {
+	items := [base, removable, object.union(base, not_affected_cves)]
+	got := batch.results with input as {"items": items} with data.sage.config as config
+	got == [
+		{"action": "update", "schedule": "auto"},
+		{"action": "remove", "schedule": "auto"},
+		{"action": "not_affected", "schedule": "auto"},
+	]
 }
