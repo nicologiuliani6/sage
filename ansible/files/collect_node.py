@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""SAGE collector: gira su un nodo (come root) e stampa un JSON con
-advisory di sicurezza, CVE e contesto di ogni pacchetto vulnerabile.
+"""SAGE collector: gira su un nodo (come root) e stampa un JSON con advisory di
+sicurezza, CVE e contesto di ogni pacchetto vulnerabile, più i dati del kernel
+che servono a verificare le condizioni di sfruttabilità.
 
 Solo libreria standard: deve girare sul Python 3.9 di Rocky Linux 9.
 """
@@ -15,8 +16,14 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EXEC_DIRS = ("/usr/bin/", "/usr/sbin/", "/usr/libexec/", "/bin/", "/sbin/")
+UNIT_DIRS = ("/usr/lib/systemd/system/", "/etc/systemd/system/")
+# Stati di `systemctl is-enabled` per cui una unit può partire da sola.
+AUTOSTART_STATES = ("enabled", "enabled-runtime", "linked", "linked-runtime", "alias", "indirect")
+MODULE_SUFFIX = re.compile(r"\.ko(\.xz|\.zst|\.gz)?$")
+BLOCK_COMMANDS = ("/bin/false", "/usr/bin/false", "/bin/true", "/usr/bin/true")
+ENV = dict(os.environ, LC_ALL="C", LANG="C")
 
 
 def run(cmd):
@@ -25,25 +32,30 @@ def run(cmd):
         res = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
             text=True,
             timeout=600,
+            env=ENV,
         )
         return res.stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
 
+def read_file(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def os_release():
     info = {}
-    try:
-        with open("/etc/os-release") as f:
-            for line in f:
-                if "=" in line:
-                    k, v = line.rstrip().split("=", 1)
-                    info[k] = v.strip('"')
-    except OSError:
-        pass
+    for line in read_file("/etc/os-release").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            info[k] = v.strip('"')
     return {"name": info.get("NAME", ""), "version": info.get("VERSION_ID", "")}
 
 
@@ -150,10 +162,69 @@ def listening_exes(exes):
 
 
 def unit_states(units):
+    """unit -> {active, enabled}"""
     if not units:
         return {}
-    out = run(["systemctl", "is-active"] + sorted(units)).splitlines()
-    return dict(zip(sorted(units), out))
+    names = sorted(units)
+    active = run(["systemctl", "is-active"] + names).splitlines()
+    enabled = run(["systemctl", "is-enabled"] + names).splitlines()
+    result = {}
+    for i, name in enumerate(names):
+        result[name] = {
+            "active": active[i] if i < len(active) else "unknown",
+            "enabled": enabled[i] if i < len(enabled) else "unknown",
+        }
+    return result
+
+
+def privileged_files(name):
+    """File setuid, setgid o con capability: sfruttabili da un utente locale anche se
+    nessun processo li sta usando."""
+    out = run(["rpm", "-q", "--qf", "[%{FILEMODES:perms}|%{FILECAPS}|%{FILENAMES}\\n]", name])
+    found = []
+    for line in out.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        perms, caps, path = parts
+        setid = len(perms) == 10 and (perms[3] in "sS" or perms[6] in "sS")
+        if setid or caps.strip():
+            found.append(path)
+    return sorted(found)
+
+
+def is_idle(ctx):
+    if ctx["binaries_running"] or ctx["libraries_loaded"] or ctx["listening"]:
+        return False
+    for state in ctx["units"].values():
+        if state["active"] == "active" or state["enabled"] in AUTOSTART_STATES:
+            return False
+    return True
+
+
+def parse_remove_simulation(output, name):
+    """Pacchetti che `dnf remove` toglierebbe oltre a `name`; None se dnf si rifiuta."""
+    if re.search(r"^(Error|Problem)", output, re.MULTILINE) or "protected packages" in output:
+        return None
+    removed, in_section = set(), False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Removing") and stripped.endswith(":"):
+            in_section = True
+            continue
+        if not stripped or stripped.startswith(("Transaction Summary", "=")):
+            in_section = False
+            continue
+        if in_section and line.startswith(" "):
+            removed.add(stripped.split()[0])
+    if name not in removed:
+        return None
+    return sorted(removed - {name})
+
+
+def removal_simulation(name):
+    out = run(["dnf", "remove", "--assumeno", "--noautoremove", name])
+    return parse_remove_simulation(out, name)
 
 
 def package_context(name, exes, mapped, listening):
@@ -165,11 +236,8 @@ def package_context(name, exes, mapped, listening):
     units = {
         os.path.basename(f)
         for f in files
-        if f.startswith(("/usr/lib/systemd/system/", "/etc/systemd/system/"))
-        and f.endswith((".service", ".socket"))
+        if f.startswith(UNIT_DIRS) and f.endswith((".service", ".socket"))
     }
-    running = sorted({e for e in exes.values() if e in fileset})
-    ports = sorted({p for exe, ps in listening.items() if exe in fileset for p in ps})
     required_by = sorted(
         {
             line.rsplit("-", 2)[0]
@@ -177,15 +245,88 @@ def package_context(name, exes, mapped, listening):
             if line and "no package requires" not in line
         }
     )
-    return {
+    ctx = {
         "installed": installed,
         "has_libraries": bool(libs),
         "libraries_loaded": sorted(f for f in libs if f in mapped),
         "has_binaries": bool(binaries),
-        "binaries_running": running,
-        "listening": ports,
+        "binaries_running": sorted({e for e in exes.values() if e in fileset}),
+        "listening": sorted({p for exe, ps in listening.items() if exe in fileset for p in ps}),
         "units": unit_states(units),
+        "privileged_files": privileged_files(name),
         "required_by": required_by,
+    }
+    ctx["idle"] = is_idle(ctx)
+    # La simulazione di rimozione serve solo per i pacchetti inattivi (è lenta).
+    if ctx["idle"] and not name.startswith("kernel"):
+        ctx["removal_also_removes"] = removal_simulation(name)
+    else:
+        ctx["removal_also_removes"] = None
+    return ctx
+
+
+# ---------------------------------------------------------------- kernel
+
+
+def module_entry(path):
+    """'kernel/net/sctp/sctp.ko.xz' -> ('sctp', 'net/sctp')"""
+    rel = path.split(":", 1)[0].strip()
+    if rel.startswith("kernel/"):
+        rel = rel[len("kernel/") :]
+    name = MODULE_SUFFIX.sub("", os.path.basename(rel)).replace("-", "_")
+    return name, os.path.dirname(rel)
+
+
+def kernel_modules(release):
+    base = "/lib/modules/" + release
+    modules = {}
+    for line in read_file(base + "/modules.dep").splitlines():
+        if line.strip():
+            name, directory = module_entry(line)
+            modules[name] = {"dir": directory, "state": "available"}
+    for line in read_file(base + "/modules.builtin").splitlines():
+        if line.strip():
+            name, directory = module_entry(line)
+            modules[name] = {"dir": directory, "state": "builtin"}
+    for line in read_file("/proc/modules").splitlines():
+        name = line.split(" ", 1)[0].replace("-", "_")
+        if name in modules:
+            modules[name]["state"] = "loaded"
+        else:
+            modules[name] = {"dir": None, "state": "loaded"}
+    return modules
+
+
+def module_blocks():
+    """Moduli bloccati: `install X /bin/false` (blocco totale) e `blacklist X`."""
+    install_blocked, blacklisted = set(), set()
+    for line in run(["modprobe", "--showconfig"]).splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "install" and parts[2] in BLOCK_COMMANDS:
+            install_blocked.add(parts[1].replace("-", "_"))
+        elif len(parts) == 2 and parts[0] == "blacklist":
+            blacklisted.add(parts[1].replace("-", "_"))
+    return sorted(install_blocked), sorted(blacklisted)
+
+
+def sysctl(path):
+    value = read_file("/proc/sys/" + path).strip()
+    return int(value) if value.lstrip("-").isdigit() else None
+
+
+def kernel_facts():
+    release = platform.release()
+    install_blocked, blacklisted = module_blocks()
+    return {
+        "release": release,
+        "modules": kernel_modules(release),
+        "install_blocked": install_blocked,
+        "blacklisted": blacklisted,
+        "sysctl": {
+            "kernel.modules_disabled": sysctl("kernel/modules_disabled"),
+            "kernel.unprivileged_bpf_disabled": sysctl("kernel/unprivileged_bpf_disabled"),
+            "user.max_user_namespaces": sysctl("user/max_user_namespaces"),
+        },
     }
 
 
@@ -225,8 +366,9 @@ def main():
                     "hostname": socket.gethostname(),
                     "role": node_role(),
                     "os": os_release(),
-                    "kernel": platform.release(),
+                    "arch": platform.machine(),
                 },
+                "kernel": kernel_facts(),
                 "summary": {
                     "advisories": len(advisories),
                     "packages": len(packages),
@@ -235,8 +377,7 @@ def main():
                     ),
                 },
                 "packages": dict(sorted(packages.items())),
-            },
-            indent=2,
+            }
         )
     )
 
