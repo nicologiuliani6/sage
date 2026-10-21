@@ -1,0 +1,270 @@
+# Remediation di UN nodo, con rollback in caso di errore.
+#
+# Lanciato da `sage remediate` dentro un Job che gira su un altro nodo, oppure a mano
+# dal bastion in emergenza (con -e sage_kube=false se l'API Kubernetes non risponde).
+#
+# Variabili (da -e @vars.json):
+#   sage_node_name           nome del nodo Kubernetes (obbligatorio)
+#   sage_update_advisories   advisory da applicare con dnf upgrade-minimal
+#   sage_remove_packages     pacchetti da rimuovere
+#   sage_denylist_modules    moduli del kernel da bloccare
+#   sage_drain_mode          evict | wait-empty
+#   sage_drain_timeout       secondi concessi al drain
+#   sage_disable_eviction    ignora i PodDisruptionBudget (solo gruppi con riserva LLM verificata)
+#   sage_control_plane       true sui master: controlli aggiuntivi su apiserver ed etcd
+#   sage_health_urls         URL che devono rispondere 2xx dopo l'intervento
+#   sage_kube                false = nessun cordon/drain/controllo via API (emergenza)
+#   sage_light               true = solo blocchi di moduli: niente cordon, drain né riavvio
+- name: Remediation SAGE
+  hosts: all
+  gather_facts: false
+  become: true
+  vars:
+    sage_kube: true
+    sage_light: false
+    # Il nodo va svuotato solo per aggiornamenti e rimozioni, e solo se c'è l'API.
+    sage_disrupt: "{{ sage_kube | bool and not sage_light | bool }}"
+    sage_update_advisories: []
+    sage_remove_packages: []
+    sage_denylist_modules: []
+    sage_drain_mode: evict
+    sage_drain_timeout: 1800
+    sage_disable_eviction: false
+    sage_control_plane: false
+    sage_health_urls: []
+    sage_denylist_file: /etc/modprobe.d/sage-denylist.conf
+    sage_applied: false
+  environment:
+    LC_ALL: C
+  tasks:
+    - name: Controlli preliminari
+      ansible.builtin.assert:
+        that:
+          - sage_node_name is defined and sage_node_name | length > 0
+          - ansible_play_hosts_all | length == 1
+          - sage_drain_mode in ['evict', 'wait-empty']
+        fail_msg: "remediate.yml agisce su un solo nodo alla volta, con sage_node_name"
+
+    - name: Remediation
+      block:
+        - name: Ultima transazione dnf prima dell'intervento
+          ansible.builtin.command: dnf -q history info last
+          register: sage_tx_before
+          changed_when: false
+          failed_when: false
+
+        - name: Cordon
+          kubernetes.core.k8s_drain:
+            name: "{{ sage_node_name }}"
+            state: cordon
+          delegate_to: localhost
+          become: false
+          when: sage_disrupt | bool
+
+        - name: Drain
+          kubernetes.core.k8s_drain:
+            name: "{{ sage_node_name }}"
+            state: drain
+            delete_options:
+              ignore_daemonsets: true
+              delete_emptydir_data: true
+              disable_eviction: "{{ sage_disable_eviction | bool }}"
+              wait_timeout: "{{ sage_drain_timeout | int }}"
+          delegate_to: localhost
+          become: false
+          when: sage_disrupt | bool and sage_drain_mode == 'evict'
+
+        - name: Attendi che il nodo si svuoti da solo (job lunghi)
+          kubernetes.core.k8s_info:
+            kind: Pod
+            field_selectors:
+              - "spec.nodeName={{ sage_node_name }}"
+          register: sage_pods
+          delegate_to: localhost
+          become: false
+          # Svuotato = nessun pod in esecuzione, esclusi DaemonSet e pod statici (owner Node).
+          until: >-
+            (sage_pods.resources
+             | rejectattr('status.phase', 'in', ['Succeeded', 'Failed'])
+             | rejectattr('metadata.ownerReferences', 'defined')
+             | list | length)
+            +
+            (sage_pods.resources
+             | rejectattr('status.phase', 'in', ['Succeeded', 'Failed'])
+             | selectattr('metadata.ownerReferences', 'defined')
+             | map(attribute='metadata.ownerReferences') | map('first')
+             | rejectattr('kind', 'in', ['DaemonSet', 'Node'])
+             | list | length) == 0
+          retries: "{{ (sage_drain_timeout | int / 30) | round(0, 'ceil') | int }}"
+          delay: 30
+          when: sage_disrupt | bool and sage_drain_mode == 'wait-empty'
+
+        - name: Da qui il nodo viene modificato
+          ansible.builtin.set_fact:
+            sage_applied: true
+
+        - name: Applica le advisory di sicurezza
+          ansible.builtin.command:
+            argv: "{{ ['dnf', '-y', 'upgrade-minimal'] + (sage_update_advisories | map('regex_replace', '^', '--advisory=') | list) }}"
+          when: sage_update_advisories | length > 0
+          register: sage_update
+          changed_when: "'Nothing to do' not in sage_update.stdout"
+
+        - name: Rimuovi i pacchetti inutilizzati
+          ansible.builtin.command:
+            argv: "{{ ['dnf', '-y', 'remove', '--noautoremove'] + sage_remove_packages }}"
+          when: sage_remove_packages | length > 0
+          changed_when: true
+
+        - name: Blocca i moduli del kernel
+          ansible.builtin.lineinfile:
+            path: "{{ sage_denylist_file }}"
+            line: "{{ item[0] }} {{ item[1] }}{{ ' /bin/false' if item[0] == 'install' else '' }}"
+            create: true
+            mode: "0644"
+          loop: "{{ ['install', 'blacklist'] | product(sage_denylist_modules) | list }}"
+
+        - name: Ultima transazione dnf dopo l'intervento
+          ansible.builtin.command: dnf -q history info last
+          register: sage_tx_after
+          changed_when: false
+          failed_when: false
+
+        - name: Riavvio necessario?
+          ansible.builtin.command: dnf needs-restarting -r
+          register: sage_restart
+          changed_when: false
+          failed_when: sage_restart.rc not in [0, 1]
+          when: not sage_light | bool
+
+        - name: Riavvia il nodo
+          ansible.builtin.reboot:
+            reboot_timeout: 1800
+            msg: "SAGE: riavvio dopo aggiornamenti di sicurezza"
+          when: not sage_light | bool and sage_restart.rc == 1
+
+        - name: Attendi che il nodo sia Ready
+          kubernetes.core.k8s_info:
+            kind: Node
+            name: "{{ sage_node_name }}"
+          register: sage_node
+          delegate_to: localhost
+          become: false
+          until: >-
+            sage_node.resources | length == 1
+            and (sage_node.resources[0].status.conditions
+                 | selectattr('type', 'equalto', 'Ready')
+                 | map(attribute='status') | first | default('False')) == 'True'
+          retries: 90
+          delay: 10
+          when: sage_disrupt | bool
+
+        - name: Master - attendi kube-apiserver pronto
+          kubernetes.core.k8s_info:
+            kind: Pod
+            namespace: kube-system
+            name: "kube-apiserver-{{ sage_node_name }}"
+          register: sage_apiserver
+          delegate_to: localhost
+          become: false
+          until: >-
+            sage_apiserver.resources | length == 1
+            and (sage_apiserver.resources[0].status.conditions | default([])
+                 | selectattr('type', 'equalto', 'Ready')
+                 | map(attribute='status') | first | default('False')) == 'True'
+          retries: 60
+          delay: 10
+          when: sage_disrupt | bool and sage_control_plane | bool
+
+        - name: Master - etcd presente su questo nodo?
+          ansible.builtin.command: systemctl cat etcd.service
+          register: sage_etcd_unit
+          changed_when: false
+          failed_when: false
+          when: sage_control_plane | bool and not sage_light | bool
+
+        - name: Master - etcd attivo
+          ansible.builtin.command: systemctl is-active etcd
+          register: sage_etcd
+          changed_when: false
+          until: sage_etcd.stdout == 'active'
+          retries: 30
+          delay: 10
+          when: sage_control_plane | bool and not sage_light | bool and sage_etcd_unit.rc == 0
+
+        - name: Uncordon
+          kubernetes.core.k8s_drain:
+            name: "{{ sage_node_name }}"
+            state: uncordon
+          delegate_to: localhost
+          become: false
+          when: sage_disrupt | bool
+
+        - name: Controlli di salute del gruppo
+          ansible.builtin.uri:
+            url: "{{ item }}"
+            status_code: [200, 201, 202, 203, 204]
+          loop: "{{ sage_health_urls }}"
+          register: sage_health
+          until: sage_health is succeeded
+          retries: 30
+          delay: 10
+          delegate_to: localhost
+          become: false
+
+      rescue:
+        - name: Errore
+          ansible.builtin.debug:
+            msg: "remediation fallita su {{ sage_node_name }}: {{ ansible_failed_result.msg | default('vedi sopra') }}"
+
+        - name: Nulla era stato modificato - rimetti il nodo in servizio
+          kubernetes.core.k8s_drain:
+            name: "{{ sage_node_name }}"
+            state: uncordon
+          delegate_to: localhost
+          become: false
+          when: sage_disrupt | bool and not sage_applied | bool
+
+        # L'errore può arrivare anche a metà di dnf: si legge la transazione adesso.
+        - name: Ultima transazione dnf al momento dell'errore
+          ansible.builtin.command: dnf -q history info last
+          register: sage_tx_now
+          changed_when: false
+          failed_when: false
+          when: sage_applied | bool
+
+        - name: Annulla la transazione dnf di SAGE
+          ansible.builtin.command: "dnf -y history undo {{ sage_tx_id }}"
+          vars:
+            # Nessun backslash nel pattern: evita i problemi di escape tra YAML e Jinja.
+            sage_tx_id: "{{ sage_tx_now.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
+            sage_tx_prev: "{{ sage_tx_before.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
+          when:
+            - sage_applied | bool
+            - sage_tx_id | length > 0
+            - sage_tx_id != sage_tx_prev
+          register: sage_undo
+          changed_when: true
+          # Il kernel in esecuzione non si può disinstallare: in quel caso si segnala e
+          # si prosegue (il nodo resta in cordon, serve un riavvio sul kernel precedente).
+          failed_when: false
+
+        - name: Rollback non riuscito
+          ansible.builtin.debug:
+            msg: "ATTENZIONE: rollback dnf non riuscito: {{ sage_undo.stdout_lines | default([]) | last | default('') }}"
+          when: sage_undo is defined and sage_undo.rc is defined and sage_undo.rc != 0
+
+        - name: Togli i blocchi dei moduli aggiunti in questo intervento
+          ansible.builtin.lineinfile:
+            path: "{{ sage_denylist_file }}"
+            line: "{{ item[0] }} {{ item[1] }}{{ ' /bin/false' if item[0] == 'install' else '' }}"
+            state: absent
+          loop: "{{ ['install', 'blacklist'] | product(sage_denylist_modules) | list }}"
+          when: sage_applied | bool
+
+        - name: Fallimento
+          ansible.builtin.fail:
+            msg: >-
+              {{ 'Remediation fallita dopo aver modificato il nodo: rollback eseguito, nodo lasciato in cordon per un controllo manuale.'
+                 if sage_applied | bool else
+                 'Remediation non avviata (drain non riuscito): nodo rimesso in servizio.' }}

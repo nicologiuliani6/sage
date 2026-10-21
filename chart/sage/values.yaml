@@ -1,6 +1,7 @@
 # Valori del chart. Nessun valore specifico di un cluster: quelli obbligatori sono
 # vuoti e l'installazione fallisce finché non li imposti nel tuo file di valori
-# (es. values-local.yaml, da non committare).
+# (es. values-local.yaml, da non committare). Esempio completo in
+# examples/values-local.example.yaml.
 
 image:
   repository: ""            # OBBLIGATORIO, es. ghcr.io/<owner>/sage
@@ -11,27 +12,38 @@ image:
 imagePullSecrets: []        # es. [{name: ghcr-pull}] se l'immagine è privata
 
 schedule: "0 */6 * * *"
-timeZone: ""                # es. "Europe/Rome"; vuoto = fuso del controller
+timeZone: ""                # fuso del CronJob, es. "Europe/Rome"; vuoto = fuso del controller
 suspend: true               # il CronJob nasce sospeso
 dryRun: true                # nessuna modifica ai nodi finché non lo disattivi
 activeDeadlineSeconds: 10800
+
+remediate:
+  activeDeadlineSeconds: 14400   # tempo massimo per un nodo (drain, aggiornamento, riavvio)
+  ttlSecondsAfterFinished: 259200  # deve superare l'intervallo dello scan: lo scan legge l'esito
 
 secrets:
   ssh: sage-ssh             # Secret con le chiavi id_ed25519 e known_hosts
   llm: ""                   # Secret con le chiavi API degli endpoint LLM (opzionale)
 
+extraEnv: []                # es. [{name: HTTPS_PROXY, value: "http://proxy:3128"}]
+
 # Diventa /etc/sage/config/config.yaml. Schema e commenti in examples/config.example.yaml.
 config:
+  timezone: UTC             # fuso delle finestre di manutenzione, es. Europe/Rome
   ssh:
     user: ""                # OBBLIGATORIO: utente SSH sui nodi
     key_path: /etc/sage/ssh/id_ed25519
     known_hosts_path: /etc/sage/ssh/known_hosts
   llm:
     timeout_seconds: 60
+    max_calls_per_run: 100
+    min_interval_seconds: 0
     endpoints: []           # vuoto = solo regole deterministiche
   groups: []                # OBBLIGATORIO: almeno un gruppo di nodi
   policy:
     protected_packages: []
+    protected_modules: []
+    idle_scans_required: 3
 
 resources:
   requests:

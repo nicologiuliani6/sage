@@ -26,6 +26,11 @@ ENV PATH="/opt/sage/.venv/bin:${PATH}" \
     ANSIBLE_CONFIG=/opt/sage/ansible/ansible.cfg \
     ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections \
     ANSIBLE_LOCAL_TEMP=/tmp/ansible \
+    SAGE_ANSIBLE_DIR=/opt/sage/ansible \
+    SAGE_POLICY_DIR=/opt/sage/policy \
+    SAGE_OPA_BIN=/usr/local/bin/opa \
+    SAGE_WORKDIR=/tmp/sage \
+    PYTHONDONTWRITEBYTECODE=1 \
     HOME=/tmp
 
 COPY ansible ./ansible

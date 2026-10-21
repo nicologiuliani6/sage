@@ -18,7 +18,8 @@ rules:
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list"]
+    # delete: solo per il drain dei gruppi requires_fallback (disable_eviction)
+    verbs: ["get", "list", "delete"]
   - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs: ["create"]
@@ -51,7 +52,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]

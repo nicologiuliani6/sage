@@ -1,0 +1,31 @@
+{{- include "sage.validate" . }}
+{{- $args := list "remediate" "--config" "/etc/sage/config/config.yaml" -}}
+# Modello del Job di remediation. `sage scan` lo legge, aggiunge nodo, piano e regola
+# di affinità ("mai sul nodo bersaglio") e lo crea: un Job per nodo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sage.fullname" . }}-remediate-template
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+data:
+  job.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      labels:
+        {{- include "sage.labels" . | nindent 8 }}
+        app.kubernetes.io/component: remediate
+    spec:
+      # Nessun nuovo tentativo: dopo un errore il playbook ha già fatto rollback,
+      # e le ondate si fermano finché una persona non controlla (sage resume).
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.remediate.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ .Values.remediate.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "sage.labels" . | nindent 12 }}
+            app.kubernetes.io/component: remediate
+        spec:
+          {{- include "sage.podSpec" (dict "root" . "args" $args) | nindent 10 }}

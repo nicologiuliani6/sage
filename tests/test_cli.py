@@ -23,6 +23,8 @@ def test_check_config_invalid(tmp_path, capsys):
     assert "ssh" in capsys.readouterr().err
 
 
-def test_not_yet_implemented_commands_fail_clearly(capsys):
-    assert main(["scan", "--config", str(EXAMPLE), "--dry-run"]) == 2
-    assert "M2" in capsys.readouterr().err
+def test_scan_outside_cluster_fails_clearly(capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("KUBECONFIG", str(tmp_path / "nessuno"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert main(["scan", "--config", str(EXAMPLE), "--dry-run"]) == 1
+    assert "API Kubernetes" in capsys.readouterr().err
