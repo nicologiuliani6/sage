@@ -24,12 +24,14 @@ ultimi, mai un nodo che modifica se stesso), rollback automatico, e da capo
 Da un master del cluster (serve `kubectl` con permessi di amministratore), con un solo comando:
 
 ```bash
-curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage-install
+curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage
 curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage-install && ./sage-install
+sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage && ./sage
 ```
 
-Un eseguibile unico, senza Python sul master ([ADR-0016](docs/adr/0016-installer-eseguibile-unico.md)).
+Un eseguibile unico, senza Python sul master: al primo avvio si installa come comando di
+sistema (`/usr/local/bin/sage`), poi da qualsiasi cartella basta `sage`
+([ADR-0016](docs/adr/0016-installer-eseguibile-unico.md)).
 Opzioni: `--live` (modalità reale da subito), `--allow-remove` (rimozione dei pacchetti
 inutilizzati), `--dashboard` (apre la dashboard), `--resume` (giro in corso e log del lavoro
 attuale).

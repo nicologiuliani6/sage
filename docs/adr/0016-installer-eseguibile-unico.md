@@ -12,7 +12,7 @@ di Python presente. Si vuole un solo file da scaricare, verificare con il checks
 
 - Il sorgente resta `installer/sage_install.py`: Python 3.9, sola libreria standard, testato con
   unittest come prima. Per ogni release la CI lo fissa (immagine, chart, Helm) e lo compila con
-  **PyInstaller** in un **eseguibile unico** `sage-install` per linux amd64.
+  **PyInstaller** in un **eseguibile unico** `sage` per linux amd64.
 - La compilazione avviene in un container **Rocky Linux 8** (glibc 2.28) fissato per digest, con
   il Python 3.12 dei repository Rocky (pacchetti firmati, con la libreria condivisa che
   PyInstaller richiede): l'eseguibile gira su Rocky e RHEL 8 e 9 e sulle distro recenti.
@@ -20,7 +20,10 @@ di Python presente. Si vuole un solo file da scaricare, verificare con il checks
   Le immagini manylinux sono state scartate: il loro Python non ha la libreria condivisa.
 - La CI prova l'eseguibile in container Rocky Linux 8 e 9 senza nessun programma nel `PATH`
   (quindi senza Python), e con `/tmp` montata `noexec` usando `TMPDIR` (baseline CIS).
-- La release pubblica `sage-install`, `sage-install.py` (per altre architetture) e i checksum.
+- La release pubblica `sage`, `sage-install.py` (per altre architetture) e i checksum.
+- **Comando di sistema**: al primo avvio l'eseguibile chiede di installarsi in
+  `/usr/local/bin/sage` (`--bin` per un'altra cartella) con `sudo -n install`; se lì c'è già
+  una copia diversa la aggiorna. Da quel momento si usa `sage` da qualsiasi cartella.
 - Opzioni da riga di comando per i casi frequenti: `--live` (modalità reale da subito),
   `--allow-remove` (rimozioni attive in tutti i gruppi), `--dashboard` (apre subito la
   dashboard), `--resume` (stato del giro e log di quello che SAGE sta facendo adesso). Ogni

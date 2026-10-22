@@ -1400,6 +1400,20 @@ def progress_lines(doc: dict | None) -> tuple[list[str], str | None]:
     return lines, job
 
 
+# Il controllore guarda le richieste ogni 30 secondi (controller.poll_seconds).
+SCAN_START_WAIT = 90
+# Dove l'eseguibile si installa come comando di sistema.
+DEFAULT_BIN = "/usr/local/bin/sage"
+
+
+def file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def parse_k8s_time(value) -> float:
     """'2026-10-22T17:05:03Z' -> secondi epoch (0 se manca)."""
     if not value:
@@ -1580,7 +1594,8 @@ class Installer:
 
     def _run(self) -> int:
         ui = self.ui
-        ui.header(f"SAGE · installer {RELEASE.get('version', 'copia locale della repo')}")
+        ui.header(f"SAGE {RELEASE.get('version', '(copia locale della repo)')}")
+        self.install_command()
         ui.busy("Controllo il cluster e i permessi...")
         self.preflight()
         current = self.current_values()
@@ -2678,6 +2693,49 @@ class Installer:
         self.ui.ok(action)
         return 0
 
+    def command_name(self) -> str:
+        """Come rilanciare questo programma: `sage` se è installato come comando."""
+        if shutil.which("sage") and os.path.realpath(shutil.which("sage")) == os.path.realpath(
+            self.args.bin
+        ):
+            return "sage"
+        return sys.argv[0]
+
+    def install_command(self) -> None:
+        """L'eseguibile si installa come comando di sistema (`sage`), se non c'è già uguale.
+
+        Solo per l'eseguibile compilato: lo script Python si lancia con python3.
+        """
+        if not getattr(sys, "frozen", False):
+            return
+        me = os.path.realpath(sys.executable)
+        target = self.args.bin
+        if os.path.realpath(target) == me:
+            return
+        if os.path.exists(target) and file_sha256(target) == file_sha256(me):
+            return
+        verb = "Aggiorno" if os.path.exists(target) else "Installo"
+        if not self.ui.yes(
+            f"{verb} il comando {target}?",
+            True,
+            help=(
+                "Così da qualsiasi cartella basta scrivere `sage` (anche `sage --dashboard` e "
+                "`sage --resume`), e il file scaricato si può cancellare."
+            ),
+        ):
+            return
+        cmd = ["install", "-m", "0755", me, target]
+        if os.geteuid() != 0:
+            cmd = ["sudo", "-n"] + cmd
+        result = run(cmd, check=False)
+        if result.returncode == 0:
+            self.ui.ok(f"comando installato: {target}")
+        else:
+            self.ui.warn(
+                f"non sono riuscito a installare {target} (serve sudo senza password): "
+                f"sudo install -m 0755 {me} {target}"
+            )
+
     def read_json_cm(self, name: str) -> dict | None:
         """Stato salvato da SAGE in una ConfigMap (JSON compresso, come sage.kube)."""
         out = self.kubectl("get", "configmap", name, "-o", "json", ns=True, check=False)
@@ -2738,14 +2796,25 @@ class Installer:
             self.record("controllo manuale (controllore spento)", [f"job {job}"])
         else:
             since = time.time()
+            doc = self.read_json_cm(f"{self.release}-controller")
+            phase = ((doc or {}).get("cycle") or {}).get("phase")
             self.kubectl("create", "configmap", f"{self.release}-scan-now", ns=True, check=False)
             self.record("giro richiesto a mano", [])
-            ui.busy("Chiesto un giro al controllore, attendo che parta il controllo...")
-            job = self.wait_scan_job(since, 120)
+            if phase in ("scan", "remediate"):
+                # Un giro è già in corso: non si interrompe. Si mostra a che punto è e si
+                # segue il lavoro attuale; il giro richiesto parte appena questo finisce.
+                ui.close()
+                print(
+                    "\nC'è già un giro in corso: il prossimo parte appena finisce "
+                    "(richiesta registrata).\n"
+                )
+                return self.resume_view()
+            job = self.wait_scan_job(since, SCAN_START_WAIT, "Chiesto un giro al controllore")
             if not job:
-                ui.info(
-                    "Il controllore è in mezzo a un giro: il nuovo parte appena finisce. "
-                    "L'avanzamento si vede dalla dashboard."
+                ui.close()
+                print(
+                    "\nIl controllore non ha ancora avviato il controllo: lo farà al prossimo "
+                    f"passo. Per seguirlo: {self.command_name()} --resume\n"
                 )
                 return 0
         return self.follow_job(job)
@@ -2760,10 +2829,14 @@ class Installer:
         self.kubectl("create", "-f", "-", ns=True, input=text)
         return job
 
-    def wait_scan_job(self, since: float, timeout: int) -> str | None:
+    def wait_scan_job(self, since: float, timeout: int, what: str = "") -> str | None:
         """Il primo Job di controllo creato dopo `since` (o None)."""
-        deadline = time.time() + timeout
+        start = time.time()
+        deadline = start + timeout
         while time.time() < deadline:
+            if what:
+                waited = int(time.time() - start)
+                self.ui.busy(f"{what}: attendo che parta il controllo ({waited} s di {timeout})")
             items = self.kjson("get", "jobs", "-l", "sage.io/role=scan", ns=True).get("items", [])
             newer = [
                 j["metadata"]["name"]
@@ -2899,6 +2972,8 @@ class Installer:
             for suffix in ("ssh", "llm", "pull"):
                 self.kubectl("delete", "secret", f"{self.release}-{suffix}", ns=True, check=False)
         ui.ok("SAGE disinstallato")
+        if os.path.exists(self.args.bin):
+            ui.info(f"Il comando resta in {self.args.bin}: per toglierlo, sudo rm {self.args.bin}")
         return 0
 
 
@@ -2907,7 +2982,7 @@ class Installer:
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
-        prog="sage-install",
+        prog="sage",
         description="Installa, riconfigura o disinstalla SAGE sul cluster di kubectl.",
     )
     p.add_argument("--namespace", default="sage", help="namespace di SAGE (default: sage)")
@@ -2939,6 +3014,11 @@ def parse_args(argv=None):
         "--resume",
         action="store_true",
         help="mostra il giro in corso e segue il log di quello che SAGE sta facendo adesso",
+    )
+    p.add_argument(
+        "--bin",
+        default=DEFAULT_BIN,
+        help=f"dove installare il comando sage (default: {DEFAULT_BIN})",
     )
     p.add_argument(
         "--dashboard-port",
