@@ -81,7 +81,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
     log.info("EPSS: %d CVE su %d", len(epss), len(all_cves))
     chain = LlmChain(cfg.llm)
     analyzer = Analyzer(
-        cfg, chain, lambda cve: sources.fetch_cve_record(cfg.sources, cve), opa.decide, now
+        cfg,
+        chain,
+        lambda cve: sources.fetch_cve_record(cfg.sources, cve),
+        opa.decide,
+        now,
+        save_cache=lambda c: kube.write_json(f"{release}-llm-cache", c),
     )
     analysis = analyzer.run(reports, groups, state.get("idle", {}), cache, kev, epss)
     state["idle"] = analysis.idle
