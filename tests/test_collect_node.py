@@ -105,7 +105,8 @@ def fake_run(cmd):
     if cmd[:2] == ["rpm", "-q"] and "FILECAPS" in cmd[3]:
         if cmd[-1] == "NetworkManager":
             return "-rwsr-xr-x||/usr/sbin/nm-helper\n-rwxr-xr-x||/usr/sbin/NetworkManager\n"
-        return "-rwxr-xr-x||/usr/bin/whatever\n"
+        # Pacchetto senza tag FILECAPS: rpm scrive "(none)" (successo sul gemello).
+        return "-rwxr-xr-x|(none)|/usr/bin/whatever\n"
     if cmd[:2] == ["rpm", "-q"]:
         return "0:1.0-1.el9\n"
     if cmd[:2] == ["rpm", "-ql"]:
@@ -213,3 +214,19 @@ def test_kernel_facts(report):
 )
 def test_parse_remove_simulation(collector, output, expected):
     assert collector.parse_remove_simulation(output, "cockpit-ws") == expected
+
+
+def test_privileged_files_parsing(collector):
+    out = (
+        "-rwsr-xr-x|(none)|/usr/bin/sudo\n"
+        "-rwxr-sr-x||/usr/bin/write\n"
+        "-rwxr-xr-x|cap_net_raw=ep|/usr/bin/ping\n"
+        "-rwxr-xr-x|(none)|/usr/bin/acl\n"
+        "-rwxr-xr-x||/usr/lib64/libacl.so.1\n"
+        "riga senza separatori\n"
+    )
+    assert collector.parse_privileged(out) == [
+        "/usr/bin/ping",
+        "/usr/bin/sudo",
+        "/usr/bin/write",
+    ]

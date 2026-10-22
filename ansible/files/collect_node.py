@@ -181,6 +181,12 @@ def privileged_files(name):
     """File setuid, setgid o con capability: sfruttabili da un utente locale anche se
     nessun processo li sta usando."""
     out = run(["rpm", "-q", "--qf", "[%{FILEMODES:perms}|%{FILECAPS}|%{FILENAMES}\\n]", name])
+    return parse_privileged(out)
+
+
+def parse_privileged(out):
+    """Righe "permessi|capability|percorso" di rpm. Se il pacchetto non ha il tag FILECAPS,
+    rpm scrive "(none)" per ogni file: non è una capability."""
     found = []
     for line in out.splitlines():
         parts = line.split("|", 2)
@@ -188,7 +194,7 @@ def privileged_files(name):
             continue
         perms, caps, path = parts
         setid = len(perms) == 10 and (perms[3] in "sS" or perms[6] in "sS")
-        if setid or caps.strip():
+        if setid or caps.strip() not in ("", "(none)"):
             found.append(path)
     return sorted(found)
 
