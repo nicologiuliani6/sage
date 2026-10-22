@@ -16,7 +16,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # Processi dei container: i loro file sono nell'immagine, non nei pacchetti del nodo.
 CONTAINER_CGROUPS = ("kubepods", "/docker/", "docker-", "libpod-", "crio-", "cri-containerd-")
 UNIT_TYPES = "service,socket,timer"
@@ -27,6 +27,31 @@ AUTOSTART_STATES = ("enabled", "enabled-runtime", "linked", "linked-runtime", "a
 MODULE_SUFFIX = re.compile(r"\.ko(\.xz|\.zst|\.gz)?$")
 BLOCK_COMMANDS = ("/bin/false", "/usr/bin/false", "/bin/true", "/usr/bin/true")
 ENV = dict(os.environ, LC_ALL="C", LANG="C")
+# Cartelle che su Rocky 9 sono collegamenti (usrmerge): rpm elenca /lib64/libc.so.6, il
+# kernel in /proc/<pid>/maps scrive /usr/lib64/libc.so.6. Si confrontano i percorsi reali.
+MERGED_DIRS = ("/bin", "/sbin", "/lib", "/lib64")
+_merged = None
+
+
+def merged_prefixes(root=""):
+    """'/lib64/' -> '/usr/lib64/' per le cartelle che sono collegamenti simbolici."""
+    found = []
+    for d in MERGED_DIRS:
+        if os.path.islink(root + d):
+            target = os.path.realpath(root + d)[len(root) :]
+            found.append((d + "/", target.rstrip("/") + "/"))
+    return found
+
+
+def canonical(path):
+    """Percorso come lo vede il kernel: '/lib64/libc.so.6' -> '/usr/lib64/libc.so.6'."""
+    global _merged
+    if _merged is None:
+        _merged = merged_prefixes()
+    for prefix, target in _merged:
+        if path.startswith(prefix):
+            return target + path[len(prefix) :]
+    return path
 
 
 def run(cmd):
@@ -150,7 +175,7 @@ def running_state(proc_root="/proc"):
             continue
         try:
             exe = os.readlink(proc + "/exe")
-            exes[pid] = exe.replace(" (deleted)", "")
+            exes[pid] = canonical(exe.replace(" (deleted)", ""))
         except OSError:
             pass
         try:
@@ -158,7 +183,7 @@ def running_state(proc_root="/proc"):
                 for line in f:
                     parts = line.split(None, 5)
                     if len(parts) == 6 and parts[5].startswith("/"):
-                        mapped.add(parts[5].strip().replace(" (deleted)", ""))
+                        mapped.add(canonical(parts[5].strip().replace(" (deleted)", "")))
         except OSError:
             pass
     return exes, mapped, skipped
@@ -218,9 +243,11 @@ def parse_privileged(out):
     return sorted(found)
 
 
-def is_idle(ctx):
+def is_idle(ctx, scan_ok=True):
     if ctx.get("needed_by"):
         return False  # serve a un servizio del nodo: mai inattivo
+    if not scan_ok:
+        return False  # lettura dei processi non affidabile: nel dubbio in uso
     if ctx["binaries_running"] or ctx["libraries_loaded"] or ctx["listening"]:
         return False
     for state in ctx["units"].values():
@@ -264,9 +291,9 @@ def source_name(out):
     return parts[0] if len(parts) == 3 and parts[0] else None
 
 
-def package_context(name, exes, mapped, listening, needed_by=None):
+def package_context(name, exes, mapped, listening, needed_by=None, scan_ok=True):
     installed = run(["rpm", "-q", "--qf", "%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n", name]).splitlines()
-    files = run(["rpm", "-ql", name]).splitlines()
+    files = [canonical(f) for f in run(["rpm", "-ql", name]).splitlines() if f.startswith("/")]
     fileset = set(files)
     libs = [f for f in files if re.search(r"\.so(\.|$)", os.path.basename(f))]
     binaries = [f for f in files if f.startswith(EXEC_DIRS)]
@@ -296,7 +323,7 @@ def package_context(name, exes, mapped, listening, needed_by=None):
         # Servizio del nodo (o voce aggiunta) che ha bisogno di questo pacchetto.
         "needed_by": needed_by,
     }
-    ctx["idle"] = is_idle(ctx)
+    ctx["idle"] = is_idle(ctx, scan_ok)
     # La simulazione di rimozione serve solo per i pacchetti inattivi (è lenta).
     if ctx["idle"] and not name.startswith("kernel"):
         ctx["removal_also_removes"] = removal_simulation(name)
@@ -310,17 +337,22 @@ def package_context(name, exes, mapped, listening, needed_by=None):
 
 def rpm_database():
     """Tre letture del database rpm: chi fornisce cosa, chi possiede quale file, chi
-    richiede cosa. Le dipendenze si risolvono poi in memoria."""
+    richiede cosa. Le dipendenze si risolvono poi in memoria.
+
+    Dentro [] rpm itera sugli array: il nome, che è un solo valore, va scritto %{=NAME}
+    (ripetuto a ogni riga). Con %{NAME} rpm si rifiuta ("different sized arrays") per
+    ogni pacchetto con più di un file, e il profilo resta vuoto.
+    """
     provides, owners, requires = {}, {}, {}
-    for line in run(["rpm", "-qa", "--qf", "[%{NAME}|%{PROVIDENAME}\\n]"]).splitlines():
+    for line in run(["rpm", "-qa", "--qf", "[%{=NAME}|%{PROVIDENAME}\\n]"]).splitlines():
         name, _, cap = line.partition("|")
         if cap and cap != "(none)":
             provides.setdefault(cap, set()).add(name)
-    for line in run(["rpm", "-qa", "--qf", "[%{NAME}|%{FILENAMES}\\n]"]).splitlines():
+    for line in run(["rpm", "-qa", "--qf", "[%{=NAME}|%{FILENAMES}\\n]"]).splitlines():
         name, _, path = line.partition("|")
         if path.startswith("/"):
-            owners.setdefault(path, set()).add(name)
-    for line in run(["rpm", "-qa", "--qf", "[%{NAME}|%{REQUIRENAME}\\n]"]).splitlines():
+            owners.setdefault(canonical(path), set()).add(name)
+    for line in run(["rpm", "-qa", "--qf", "[%{=NAME}|%{REQUIRENAME}\\n]"]).splitlines():
         name, _, cap = line.partition("|")
         if cap and cap != "(none)" and not cap.startswith("rpmlib("):
             requires.setdefault(name, set()).add(cap)
@@ -336,7 +368,7 @@ def required_closure(seeds, db):
         pkg = queue.pop()
         for cap in sorted(db["requires"].get(pkg, ())):
             found = db["provides"].get(cap) or (
-                db["owners"].get(cap) if cap.startswith("/") else None
+                db["owners"].get(canonical(cap)) if cap.startswith("/") else None
             )
             for provider in sorted(found or ()):
                 if provider not in origin:
@@ -372,23 +404,38 @@ def node_units():
 
 
 def unit_paths(units):
-    """unit -> file della unit ed eseguibili di ExecStart."""
+    """unit -> file della unit ed eseguibili di ExecStart.
+
+    `systemctl show` separa le unit con una riga vuota e non stampa le proprietà
+    nell'ordine chiesto (ExecStart arriva prima di Id): si legge un blocco alla volta.
+    Il file della unit si cerca anche direttamente nelle cartelle di systemd, così un
+    output inatteso di systemctl non svuota il profilo.
+    """
     paths = {}
     if not units:
         return paths
     names = sorted(units)
     out = run(["systemctl", "show", "-p", "Id", "-p", "FragmentPath", "-p", "ExecStart"] + names)
-    current = None
-    for line in out.splitlines():
-        key, _, value = line.partition("=")
-        if key == "Id":
-            current = paths.setdefault(value, [])
-        elif current is None:
+    for block in re.split(r"\n\s*\n", out):
+        props = {}
+        for line in block.splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                props.setdefault(key, []).append(value)
+        unit = (props.get("Id") or [""])[0]
+        if unit not in units:
             continue
-        elif key == "FragmentPath" and value:
-            current.append(value)
-        elif key == "ExecStart":
-            current += re.findall(r"path=(\S+)", value)
+        files = paths.setdefault(unit, [])
+        files += [canonical(v) for v in props.get("FragmentPath", []) if v.startswith("/")]
+        for value in props.get("ExecStart", []):
+            files += [canonical(p) for p in re.findall(r"path=(\S+)", value)]
+    for unit in names:
+        # 'getty@tty1.service' viene dal modello 'getty@.service'
+        base = re.sub(r"@[^.]*\.", "@.", unit)
+        for d in UNIT_DIRS:
+            for name in {unit, base}:
+                if os.path.exists(d + name):
+                    paths.setdefault(unit, []).append(d + name)
     return paths
 
 
@@ -420,6 +467,8 @@ def node_profile(extra, db):
         seeds.setdefault(pkg, pkg + " (aggiunto)")
     required = required_closure(seeds, db)
     return {
+        "unit_files": sum(1 for files in paths.values() if files),
+        "seeds": len(seeds),
         "units": sorted(units),
         "extra": sorted(extra),
         "extra_missing": sorted(set(missing)),
@@ -511,8 +560,13 @@ def main(argv=None):
     details = advisory_details()
     exes, mapped, container_processes = running_state()
     listening = listening_exes(exes)
-    profile = node_profile(extra, rpm_database())
+    db = rpm_database()
+    profile = node_profile(extra, db)
     profile["container_processes"] = container_processes
+    # Controllo di coerenza: qualche file in uso dai processi del nodo deve appartenere a
+    # un pacchetto (almeno la libc). Se no, la lettura non è affidabile e nessun pacchetto
+    # viene dichiarato inattivo.
+    profile["process_scan_ok"] = any(f in db["owners"] for f in mapped)
 
     packages = {}
     for adv_id, adv in advisories.items():
@@ -531,7 +585,12 @@ def main(argv=None):
     for name, pkg in packages.items():
         pkg["advisories"].sort(key=lambda a: a["id"])
         pkg["context"] = package_context(
-            name, exes, mapped, listening, profile["required"].get(name)
+            name,
+            exes,
+            mapped,
+            listening,
+            profile["required"].get(name),
+            profile["process_scan_ok"],
         )
 
     print(

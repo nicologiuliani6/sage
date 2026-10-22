@@ -135,6 +135,15 @@ def profile_lines(report: dict[str, Any]) -> list[str]:
     ]
     if profile.get("container_processes"):
         lines[0] += f"; {profile['container_processes']} processi dei container esclusi"
+    if profile.get("process_scan_ok") is False:
+        lines.append(
+            "   ATTENZIONE, lettura dei processi non affidabile: "
+            "nessun pacchetto dichiarato inattivo"
+        )
+    if profile.get("units") and not profile.get("required"):
+        lines.append(
+            "   ATTENZIONE, nessun pacchetto ricondotto ai servizi: profilo non utilizzabile"
+        )
     if profile.get("extra"):
         lines.append("   aggiunti a mano: " + ", ".join(profile["extra"]))
     if profile.get("extra_missing"):

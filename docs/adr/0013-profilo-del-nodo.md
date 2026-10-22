@@ -51,3 +51,24 @@ quindi calcolare.
   dipendenze nel profilo; le librerie che caricano risultano comunque in uso dai processi.
 - Un container privilegiato che esegue programmi del nodo (es. con `chroot` sul filesystem
   dell'host) viene escluso come gli altri: caso raro, da dichiarare tra i servizi aggiuntivi.
+
+## Correzioni dopo il primo giro sul gemello (2026-10-22)
+
+Il primo giro con il profilo ha trovato 0 pacchetti necessari su ogni nodo e ha dichiarato
+"nessun processo usa il pacchetto" anche per glibc. Due cause, entrambe nel collector:
+
+- **queryformat di rpm**: dentro `[...]` il nome del pacchetto va scritto `%{=NAME}`. Con
+  `%{NAME}` rpm rifiuta ogni pacchetto con più di un file o dipendenza, e il database del
+  profilo restava quasi vuoto.
+- **usrmerge**: su Rocky 9 `/lib64`, `/bin`, `/sbin` e `/lib` sono collegamenti a `/usr`. rpm
+  elenca `/lib64/libc.so.6`, il kernel in `/proc/<pid>/maps` scrive `/usr/lib64/libc.so.6`.
+  I percorsi ora si confrontano dopo averli ricondotti a quelli reali.
+
+Inoltre, sempre nel senso del fail closed:
+
+- **controllo di coerenza dei processi**: se nessun file usato dai processi del nodo appartiene
+  a un pacchetto (almeno la libc dovrebbe), la lettura non è affidabile e nessun pacchetto viene
+  dichiarato inattivo (`process_scan_ok` nel profilo, avviso nel riepilogo).
+- `systemctl show` stampa ExecStart prima di Id: le unit si leggono a blocchi, e il file della
+  unit si cerca anche direttamente nelle cartelle di systemd.
+- il riepilogo avvisa se un nodo ha servizi ma nessun pacchetto ricondotto a loro.
