@@ -57,6 +57,8 @@ GPU_RESOURCE_PREFIXES = ("nvidia.com/gpu", "amd.com/gpu", "gpu.intel.com/")
 # La remediation usa dnf: per ora solo la famiglia RHEL.
 SUPPORTED_OS = re.compile(r"rocky|red hat|rhel|almalinux|centos stream|oracle linux|fedora", re.I)
 NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+# Unit systemd o pacchetto (stessa regola della configurazione di SAGE).
+SERVICE_RE = re.compile(r"^[A-Za-z0-9@._:+-]{1,128}$")
 DAYS = "(mon|tue|wed|thu|fri|sat|sun)"
 WINDOW_RE = re.compile(rf"^{DAYS}(,{DAYS})* ([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
 DEFAULT_WINDOW = "sat 02:00-06:00"
@@ -1469,6 +1471,10 @@ def node_label_changes(nodes, assignment: dict) -> list[str]:
     return changes
 
 
+def split_list(text: str) -> list:
+    return [x.strip() for x in re.split(r"[,\s]+", text or "") if x.strip()]
+
+
 def env_name(endpoint: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", endpoint.upper()) + "_API_KEY"
 
@@ -1551,6 +1557,7 @@ class Installer:
                     "Riconfigura: nodi, gruppi, LLM, frequenza (parte da quella attuale)",
                     "configure",
                 ),
+                ("Modifica il cluster: servizi aggiuntivi dei nodi", "cluster"),
                 (
                     "Torna alla simulazione"
                     if live
@@ -1572,6 +1579,8 @@ class Installer:
                 return self.update(current, target)
             if action == "configure":
                 return self.configure(current, new=False)
+            if action == "cluster":
+                return self.edit_cluster(current)
             if action == "live":
                 return self.toggle_live(current)
             if action == "suspend":
@@ -1584,6 +1593,70 @@ class Installer:
             if action == "uninstall":
                 return self.uninstall(current)
             return 0
+
+    EXTRA_HELP = (
+        "Servizi o pacchetti che il nodo usa fuori da Kubernetes: agent di backup o di "
+        "monitoraggio, NFS, strumenti di amministrazione. Contano come necessari anche quando "
+        "non girano: SAGE non li considera inutilizzati e non li rimuove. Nomi di unit "
+        "systemd (es. backup.service) o di pacchetti (es. rsync), separati da virgole."
+    )
+
+    def ask_extra(self, title: str, current: list) -> list:
+        def check(v):
+            bad = [i for i in split_list(v) if not SERVICE_RE.match(i)]
+            return f"nomi non validi: {', '.join(bad)}" if bad else None
+
+        value = self.ui.ask(title, ", ".join(current), check, help=self.EXTRA_HELP)
+        return split_list(value)
+
+    def edit_cluster(self, current: dict) -> int:
+        """Servizi aggiuntivi per nodo, fuori da Kubernetes."""
+        ui = self.ui
+        config = current.get("config", {})
+        original = {k: list(v) for k, v in (config.get("extra_services") or {}).items()}
+        extra = copy.deepcopy(original)
+        nodes = [n for n in parse_nodes(self.kjson("get", "nodes")) if GROUP_LABEL in n.labels]
+        if not nodes:
+            raise Fail("nessun nodo gestito da SAGE: prima installa o riconfigura")
+        groups = sorted({n.labels[GROUP_LABEL] for n in nodes})
+        while True:
+            options = ["Fatto: salva le modifiche", "Annulla"]
+            options += [f"{n.name}: {', '.join(extra.get(n.name, [])) or '-'}" for n in nodes]
+            options.append("Stessi servizi per tutti i nodi di un gruppo...")
+            pick = ui.choose("Servizi aggiuntivi dei nodi", options, help=self.EXTRA_HELP)
+            if pick == 0:
+                break
+            if pick == 1:
+                ui.info("Nessuna modifica fatta.")
+                return 0
+            if pick == len(options) - 1:
+                group = groups[ui.choose("Quale gruppo?", groups)]
+                group_nodes = [n.name for n in nodes if n.labels[GROUP_LABEL] == group]
+                items = self.ask_extra(
+                    f"Servizi o pacchetti per i nodi del gruppo {group}",
+                    extra.get(group_nodes[0], []),
+                )
+                targets = group_nodes
+            else:
+                node = nodes[pick - 2].name
+                items = self.ask_extra(f"Servizi o pacchetti per {node}", extra.get(node, []))
+                targets = [node]
+            for name in targets:
+                if items:
+                    extra[name] = items
+                else:
+                    extra.pop(name, None)
+        if extra == original:
+            ui.info("Nessuna modifica.")
+            return 0
+        values = copy.deepcopy(current)
+        values.setdefault("config", {})["extra_services"] = extra
+        note = self.ask_note()
+        ui.busy("Applico le modifiche...")
+        revision = self.helm_apply(values, "servizi aggiuntivi dei nodi")
+        self.record("servizi aggiuntivi dei nodi", diff_values(current, values), note, revision)
+        ui.ok("servizi aggiuntivi salvati: valgono dal prossimo giro")
+        return 0
 
     def update(self, current: dict, target: str) -> int:
         """Nuova immagine e nuovo chart, stessa configurazione."""

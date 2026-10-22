@@ -173,3 +173,10 @@ def test_mitigation_ok():
 )
 def test_mitigation_refused(kw):
     assert mitigation(**kw)[0] is False
+
+
+def test_package_needed_by_node_service_is_in_use():
+    pkg = package([], idle=True)
+    pkg["context"]["needed_by"] = "sshd.service"
+    check = c.verify({"type": "component_in_use"}, "openssl-libs", pkg["context"], {}, {}, True, 3)
+    assert check.state == "true" and "sshd.service" in check.evidence

@@ -38,7 +38,7 @@ def test_empty_selector_rejected():
         parse_selector(" , ")
 
 
-def make_cfg(tmp_path, known_hosts=True, proxy=None):
+def make_cfg(tmp_path, known_hosts=True, proxy=None, extra=None):
     key = tmp_path / "key"
     key.write_text("chiave-finta")
     os.chmod(key, 0o440)
@@ -47,6 +47,7 @@ def make_cfg(tmp_path, known_hosts=True, proxy=None):
         kh.write_text("")
     return config.parse(
         {
+            "extra_services": extra or {},
             "ssh": {
                 "user": "admin",
                 "key_path": str(key),
@@ -88,10 +89,12 @@ def test_assign_groups(tmp_path):
 
 
 def test_inventory(tmp_path):
-    cfg = make_cfg(tmp_path, proxy="jump@bastion")
+    cfg = make_cfg(tmp_path, proxy="jump@bastion", extra={"w1": ["backup.service", "nfs-utils"]})
     path, warnings = write_inventory([node("w1"), node("noip", ip=None)], cfg, tmp_path / "w")
     inv = yaml.safe_load(path.read_text())["all"]
-    assert inv["hosts"] == {"w1": {"ansible_host": "192.0.2.10"}}
+    assert inv["hosts"] == {
+        "w1": {"ansible_host": "192.0.2.10", "sage_extra_services": ["backup.service", "nfs-utils"]}
+    }
     assert inv["vars"]["ansible_user"] == "admin"
     args = inv["vars"]["ansible_ssh_common_args"]
     assert "StrictHostKeyChecking=yes" in args and "ProxyJump=jump@bastion" in args

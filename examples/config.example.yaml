@@ -9,6 +9,12 @@ timezone: Europe/Rome                    # fuso orario delle finestre di manuten
 # Dettaglio del log: info (fasi, avanzamento, una riga per chiamata LLM) o debug.
 log_level: info
 
+# Servizi (unit systemd) o pacchetti fuori da Kubernetes che un nodo deve tenere, anche
+# quando in quel momento non girano: contano come necessari. Nome del nodo -> elenco.
+# Si gestiscono anche dall'installer (Modifica il cluster).
+extra_services: {}
+#  worker01: [backup-agent.service, node-exporter.service]
+
 ssh:
   user: UTENTE_SSH                       # utente sui nodi, con sudo
   key_path: /etc/sage/ssh/id_ed25519     # chiave dedicata a SAGE (Secret montato)

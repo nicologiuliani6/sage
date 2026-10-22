@@ -20,6 +20,8 @@ import yaml
 KERNEL_MODES = ("auto", "window", "manual")
 DRAIN_MODES = ("evict", "wait-empty")
 LOG_LEVELS = ("info", "debug")
+# Nome di una unit systemd o di un pacchetto.
+SERVICE_RE = re.compile(r"^[A-Za-z0-9@._:+-]{1,128}$")
 WINDOW_RE = re.compile(
     r"^(?P<days>(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun))*) "
     r"(?P<start>([01]\d|2[0-3]):[0-5]\d)-(?P<end>([01]\d|2[0-3]):[0-5]\d)$"
@@ -109,6 +111,9 @@ class Config:
     timezone: str = "UTC"
     # Dettaglio del log: "info" (fasi e avanzamento) o "debug" (anche ogni CVE e la cache).
     log_level: str = "info"
+    # Servizi (unit systemd) o pacchetti fuori da Kubernetes che un nodo deve tenere:
+    # nome del nodo -> elenco. Contano come necessari anche quando non girano.
+    extra_services: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def group(self, name: str) -> NodeGroup | None:
         return next((g for g in self.groups if g.name == name), None)
@@ -147,6 +152,8 @@ def parse(raw: dict[str, Any]) -> Config:
         errors.append(f"log_level: uno tra {', '.join(LOG_LEVELS)}")
         log_level = "info"
 
+    extra_services = _parse_extra_services(raw.get("extra_services"), errors)
+
     group_names = {g.name for g in groups}
     for ep in llm.endpoints:
         if ep.hosted_in_group and ep.hosted_in_group not in group_names:
@@ -162,6 +169,7 @@ def parse(raw: dict[str, Any]) -> Config:
         sources=sources,
         timezone=str(timezone),
         log_level=log_level,
+        extra_services=extra_services,
     )
 
 
@@ -313,6 +321,26 @@ def _parse_groups(raw: Any, errors: list[str]) -> tuple[NodeGroup, ...]:
             )
         )
     return tuple(sorted(groups, key=lambda grp: grp.order))
+
+
+def _parse_extra_services(raw: Any, errors: list[str]) -> dict[str, tuple[str, ...]]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        errors.append("extra_services: oggetto nodo -> elenco di servizi o pacchetti")
+        return {}
+    result = {}
+    for node, items in raw.items():
+        where = f"extra_services.{node}"
+        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+            errors.append(f"{where}: elenco di nomi")
+            continue
+        bad = [i for i in items if not SERVICE_RE.match(i)]
+        if bad:
+            errors.append(f"{where}: nomi non validi: {', '.join(bad)}")
+            continue
+        result[str(node)] = tuple(items)
+    return result
 
 
 def _parse_policy(raw: dict[str, Any], errors: list[str]) -> PolicyConfig:

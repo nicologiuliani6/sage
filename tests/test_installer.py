@@ -843,12 +843,32 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("note", reconf)
 
         # Passaggio al vivo, con conferma esplicita.
-        code, _ = self.run_installer(["2", "s", "canary controllato"])
+        code, _ = self.run_installer(["3", "s", "canary controllato"])
         self.assertEqual(code, 0)
         self.assertFalse(self.read_state()["helm"]["values"]["dryRun"])
         live = self.history()[-1]
         self.assertEqual(live["changes"], ["dryRun: true → false"])
         self.assertEqual(live["note"], "canary controllato")
+
+        # Modifica il cluster: servizi aggiuntivi per w1 e per tutto il gruppo master.
+        # Menu: riconfigura 1, cluster 2. Nella pagina: fatto, annulla, cp1, w1, w2, gruppo.
+        code, prompts = self.run_installer(
+            ["2", "4", "backup.service, rsync", "6", "1", "node-exporter.service", "1", "nota"]
+        )
+        self.assertEqual(code, 0, prompts)
+        extra = self.read_state()["helm"]["values"]["config"]["extra_services"]
+        # w2 è passato ai master nella riconfigurazione: riceve anche lui il servizio.
+        self.assertEqual(
+            extra,
+            {
+                "w1": ["backup.service", "rsync"],
+                "cp1": ["node-exporter.service"],
+                "w2": ["node-exporter.service"],
+            },
+        )
+        cluster = self.history()[-1]
+        self.assertEqual(cluster["action"], "servizi aggiuntivi dei nodi")
+        self.assertTrue(any("extra_services.w1" in c for c in cluster["changes"]))
 
         # Installer di una versione nuova: compare "Aggiorna", la configurazione resta.
         new_image = "registry.example/owner/sage@sha256:" + "b" * 64
@@ -862,11 +882,11 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("immagine: " + IMAGE + " → " + new_image, update["changes"])
 
         # Storico dal menu: voce più recente, dettagli, indietro, esci.
-        code, _ = self.run_installer(["5", "2", "1", "1", "7"], args=("--image", new_image))
+        code, _ = self.run_installer(["6", "2", "1", "1", "8"], args=("--image", new_image))
         self.assertEqual(code, 0)
 
         # Disinstallazione: chiave tolta dai nodi, etichette rimosse, storico salvato.
-        code, _ = self.run_installer(["6", "s", "", ""], args=("--image", new_image))
+        code, _ = self.run_installer(["7", "s", "", ""], args=("--image", new_image))
         self.assertEqual(code, 0)
         state = self.read_state()
         self.assertIsNone(state["helm"])
@@ -884,6 +904,7 @@ class EndToEnd(unittest.TestCase):
                 "giro manuale",
                 "riconfigurazione",
                 "passaggio al vivo",
+                "servizi aggiuntivi dei nodi",
                 "aggiornamento",
                 "disinstallazione",
             ],

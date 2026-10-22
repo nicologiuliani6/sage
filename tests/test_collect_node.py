@@ -91,7 +91,76 @@ KERNEL_FILES = {
 }
 
 
+RPM_PROVIDES = """\
+NetworkManager|NetworkManager
+libnm-helper|libnm-helper.so.1()(64bit)
+openssh-server|openssh-server
+openssl-libs|libcrypto.so.3()(64bit)
+"""
+RPM_FILES = """\
+NetworkManager|/usr/sbin/NetworkManager
+NetworkManager|/usr/lib/systemd/system/NetworkManager.service
+openssh-server|/usr/sbin/sshd
+openssh-server|/usr/lib/systemd/system/sshd.service
+bash|/bin/sh
+cockpit-ws|/usr/lib/systemd/system/cockpit.socket
+"""
+RPM_REQUIRES = """\
+NetworkManager|libnm-helper.so.1()(64bit)
+NetworkManager|/bin/sh
+NetworkManager|rpmlib(PayloadIsZstd)
+openssh-server|libcrypto.so.3()(64bit)
+bash|(none)
+"""
+UNITS_ACTIVE = """\
+NetworkManager.service loaded active running Network Manager
+sshd.service loaded active running OpenSSH server daemon
+kubelet.service loaded active running kubelet
+"""
+UNITS_ENABLED = "getty@.service enabled enabled\nsshd.service enabled enabled\n"
+UNIT_FILES = {
+    "NetworkManager.service": (
+        "/usr/lib/systemd/system/NetworkManager.service",
+        "/usr/sbin/NetworkManager",
+    ),
+    "sshd.service": ("/usr/lib/systemd/system/sshd.service", "/usr/sbin/sshd"),
+    "kubelet.service": ("/etc/systemd/system/kubelet.service", "/usr/local/bin/kubelet"),
+}
+
+
+def systemctl_show(units):
+    blocks = []
+    for unit in units:
+        fragment, exe = UNIT_FILES.get(unit, ("", ""))
+        exec_start = f"{{ path={exe} ; argv[]={exe} ; }}" if exe else ""
+        blocks.append(f"Id={unit}\nFragmentPath={fragment}\nExecStart={exec_start}\n")
+    return "\n".join(blocks)
+
+
 def fake_run(cmd):
+    if cmd[:2] == ["rpm", "-qa"]:
+        qf = cmd[3]
+        if "PROVIDENAME" in qf:
+            return RPM_PROVIDES
+        if "FILENAMES" in qf:
+            return RPM_FILES
+        if "REQUIRENAME" in qf:
+            return RPM_REQUIRES
+        return "NetworkManager\nlibnm-helper\nopenssh-server\nopenssl-libs\nbash\ncockpit-ws\n"
+    if cmd[:2] == ["systemctl", "list-units"]:
+        return UNITS_ACTIVE
+    if cmd[:2] == ["systemctl", "list-unit-files"]:
+        return UNITS_ENABLED
+    if cmd[:2] == ["systemctl", "show"]:
+        return systemctl_show(
+            [
+                c
+                for c in cmd[2:]
+                if not c.startswith("-")
+                and "=" not in c
+                and c not in ("Id", "FragmentPath", "ExecStart")
+            ]
+        )
     if cmd[:4] == ["dnf", "-q", "updateinfo", "list"]:
         return UPDATEINFO_LIST
     if cmd[:4] == ["dnf", "-q", "updateinfo", "info"]:
@@ -130,21 +199,25 @@ def collector():
     return mod
 
 
-@pytest.fixture
-def report(collector, monkeypatch, capsys):
+def run_collector(collector, monkeypatch, capsys, argv=()):
     monkeypatch.setattr(collector, "run", fake_run)
     monkeypatch.setattr(collector, "read_file", lambda p: KERNEL_FILES.get(p, ""))
     monkeypatch.setattr(
-        collector, "running_state", lambda: ({"42": "/usr/sbin/NetworkManager"}, set())
+        collector, "running_state", lambda: ({"42": "/usr/sbin/NetworkManager"}, set(), 3)
     )
     monkeypatch.setattr(collector.platform, "release", lambda: "5.14.0-500.el9.x86_64")
     monkeypatch.setattr(collector.platform, "machine", lambda: "x86_64")
-    collector.main()
+    collector.main(list(argv))
     return json.loads(capsys.readouterr().out)
 
 
+@pytest.fixture
+def report(collector, monkeypatch, capsys):
+    return run_collector(collector, monkeypatch, capsys)
+
+
 def test_summary(report):
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["summary"] == {"advisories": 5, "packages": 4, "cves": 3}
     assert report["node"]["os"] == {"name": "Rocky Linux", "version": "9.4"}
 
@@ -230,3 +303,63 @@ def test_privileged_files_parsing(collector):
         "/usr/bin/sudo",
         "/usr/bin/write",
     ]
+
+
+def test_node_profile(report):
+    profile = report["profile"]
+    assert profile["units"] == ["NetworkManager.service", "kubelet.service", "sshd.service"]
+    # Dipendenze risolte in memoria, anche tramite un file (/bin/sh); rpmlib() ignorato.
+    assert profile["required"] == {
+        "NetworkManager": "NetworkManager.service",
+        "bash": "NetworkManager.service",
+        "libnm-helper": "NetworkManager.service",
+        "openssh-server": "sshd.service",
+        "openssl-libs": "sshd.service",
+    }
+    assert profile["container_processes"] == 3
+    assert profile["extra"] == [] and profile["extra_missing"] == []
+    assert report["packages"]["NetworkManager"]["context"]["needed_by"] == "NetworkManager.service"
+    assert report["packages"]["cockpit-ws"]["context"]["needed_by"] is None
+
+
+def test_extra_services_keep_packages_needed(collector, monkeypatch, capsys):
+    report = run_collector(
+        collector, monkeypatch, capsys, ["--extra", "cockpit-ws, backup.service,ghost"]
+    )
+    profile = report["profile"]
+    ctx = report["packages"]["cockpit-ws"]["context"]
+    assert ctx["needed_by"] == "cockpit-ws (aggiunto)"
+    assert ctx["idle"] is False and ctx["removal_also_removes"] is None
+    assert profile["extra"] == ["backup.service", "cockpit-ws", "ghost"]
+    assert profile["extra_missing"] == ["backup.service", "ghost"]  # inesistenti: segnalati
+
+
+def test_container_processes_are_ignored(collector, tmp_path):
+    def proc(pid, exe, maps, cgroup):
+        d = tmp_path / pid
+        d.mkdir()
+        (d / "exe").symlink_to(exe)
+        (d / "maps").write_text(f"7f00-7f01 r-xp 00000000 fd:00 1 {maps}\n")
+        (d / "cgroup").write_text(cgroup)
+
+    proc("1", "/usr/lib/systemd/systemd", "/usr/lib64/libc.so.6", "0::/init.scope\n")
+    # Servizio con PrivateTmp: namespace suo, ma file del nodo. Va contato.
+    proc(
+        "10", "/usr/sbin/chronyd", "/usr/lib64/libcrypto.so.3", "0::/system.slice/chronyd.service\n"
+    )
+    proc(
+        "20",
+        "/usr/bin/python3",
+        "/usr/lib64/libssl.so.3",
+        "0::/kubepods.slice/kubepods-burstable.slice/kubepods-pod1.slice/cri-containerd-a.scope\n",
+    )
+    exes, mapped, skipped = collector.running_state(str(tmp_path))
+    assert sorted(exes.values()) == ["/usr/lib/systemd/systemd", "/usr/sbin/chronyd"]
+    assert "/usr/lib64/libssl.so.3" not in mapped  # libreria del container, non del nodo
+    assert "/usr/lib64/libcrypto.so.3" in mapped
+    assert skipped == 1
+
+
+def test_parse_args(collector):
+    assert collector.parse_args(["--extra", "a, b,,c"]) == ["a", "b", "c"]
+    assert collector.parse_args([]) == []

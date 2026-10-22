@@ -101,9 +101,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
     plan_dicts = {n: p.to_dict() for n, p in plans.items()}
     data = report.to_json(analysis, plan_dicts, messages, warnings, now, args.dry_run)
     data["vex"] = report.openvex(analysis, reports, now)
+    data["profiles"] = {node: r.get("profile") for node, r in reports.items()}
     kube.write_json(f"{release}-report", data)
     log.info("report salvato in %s-report", release)
-    print(report.summary(analysis, groups, plan_dicts, messages, warnings, args.dry_run))
+    print(report.summary(analysis, groups, plan_dicts, messages, warnings, args.dry_run, reports))
     return 0
 
 

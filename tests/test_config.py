@@ -69,6 +69,8 @@ def test_minimal_config_runs_in_safe_mode():
             "base_url",
         ),
         (minimal(log_level="verbose"), "log_level"),
+        (minimal(extra_services={"w1": ["ok.service", "rm -rf /"]}), "extra_services.w1"),
+        (minimal(extra_services=["x"]), "extra_services"),
     ],
 )
 def test_invalid_configs_are_rejected(raw, fragment):

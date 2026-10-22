@@ -6,6 +6,7 @@
 # Variabili:
 #   sage_out_dir  (obbligatoria) cartella in cui salvare <nodo>.json
 #   sage_targets  (opzionale)    gruppo o pattern di host, default: all
+#   sage_extra_services (per nodo, opzionale) servizi o pacchetti fuori da Kubernetes
 - name: Raccolta dai nodi
   hosts: "{{ sage_targets | default('all') }}"
   gather_facts: false
@@ -31,7 +32,8 @@
 
     - name: Esegui il collector sul nodo
       ansible.builtin.script:
-        cmd: files/collect_node.py
+        # Nomi già validati dalla configurazione (lettere, cifre, @._:+-).
+        cmd: "files/collect_node.py --extra '{{ sage_extra_services | default([]) | join(',') }}'"
         executable: python3
       register: collected
       changed_when: false
