@@ -10,12 +10,8 @@ mkdir -p "$out"
 work=$(mktemp -d)
 cp "$src" "$work/sage-install.py"
 cp ci/installer-build.txt "$work/requirements.txt"
-checked docker run --rm -v "$work:/build" -w /build "$MANYLINUX_IMAGE" bash -euc '
-  py=/opt/python/cp312-cp312/bin/python
-  $py -m pip install --quiet --no-cache-dir --require-hashes -r requirements.txt
-  $py -m PyInstaller --onefile --clean --noconfirm --name sage-install sage-install.py
-  chmod 0755 dist/sage-install
-'
+cp ci/installer_build_inside.sh "$work/build.sh"
+checked docker run --rm -v "$work:/build" "$MANYLINUX_IMAGE" bash /build/build.sh
 cp "$work/dist/sage-install" "$out/sage-install"
 for image in "$ROCKY9_IMAGE" "$ROCKY8_IMAGE"; do
   # PATH vuoto: nessun Python né altri strumenti a disposizione dell'eseguibile.
