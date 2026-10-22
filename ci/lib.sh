@@ -2,8 +2,8 @@
 # Funzioni comuni degli script della CI. Si usa con `source ci/lib.sh`.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-# shellcheck source=ci/versions.env
-source ci/versions.env
+# shellcheck source=ci/versions.sh
+source ci/versions.sh
 TOOLS="${RUNNER_TEMP:-$(mktemp -d)}/sage-tools"
 mkdir -p "$TOOLS"
 
