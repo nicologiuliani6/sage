@@ -28,6 +28,7 @@ done
 python3 ci/stamp_installer.py installer/sage_install.py "$dist/sage-install.py" \
   "version=${version}" "image=${IMAGE}" \
   "chart_url=${base}/${chart}" "chart_sha256=${chart_sha}" \
+  "chart_b64=$(base64 -w0 "$dist/$chart")" \
   "helm_version=${HELM_VERSION}" "${helm_args[@]}"
 python3 "$dist/sage-install.py" --version
 # Eseguibile unico dall'installer già fissato: sui master non serve Python.
@@ -56,10 +57,19 @@ disinstalla.
 NOTES
 
 assets=("$dist/sage" "$dist/sage-install.py" "$dist/$chart" "$dist/SHA256SUMS")
+# Un'altra esecuzione per lo stesso tag ha già pubblicato i file: si lasciano i suoi, così
+# installer, chart e checksum vengono sempre dalla stessa compilazione.
+if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
+  --jq '.assets[].name' 2> /dev/null | grep -qx SHA256SUMS; then
+  echo "::notice title=release::$GITHUB_REF_NAME ha già i suoi file: nessuna modifica"
+  exit 0
+fi
 if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
   # Release creata a mano dalla pagina di GitHub (che crea anche il tag): si completano
   # file e note.
-  gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+  # Senza --clobber: se nel frattempo un'altra esecuzione ha caricato i file, questa fallisce
+  # invece di mescolarli.
+  gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
   gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
     --title "SAGE ${version}" --notes-file "$dist/notes.md"
 else

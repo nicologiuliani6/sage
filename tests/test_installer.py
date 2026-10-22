@@ -6,6 +6,7 @@ Scritti con unittest e senza dipendenze, così la CI li esegue anche con Python 
 
 import base64
 import gzip
+import hashlib
 import importlib.util
 import json
 import os
@@ -576,6 +577,29 @@ class Stamp(unittest.TestCase):
         self.assertEqual(module.RELEASE, self.DATA)
         self.assertEqual(out.stdout.strip(), "0.1.0")
         self.assertEqual(len(stamped.splitlines()), len(source.splitlines()))
+
+    def test_chart_inside_installer(self):
+        chart = b"chart finto"
+        data = dict(
+            self.DATA,
+            chart_b64=base64.b64encode(chart).decode(),
+            chart_sha256=hashlib.sha256(chart).hexdigest(),
+        )
+        source = (ROOT / "installer" / "sage_install.py").read_text()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sage-install.py"
+            path.write_text(stamp.stamp(source, data))
+            module = load(path, "sage_install_chart")
+        args = module.parse_args(["--no-tui"])
+        installer = module.Installer(args, module.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        with mock.patch.object(module, "download", side_effect=AssertionError("niente download")):
+            self.assertEqual(Path(installer.chart()).read_bytes(), chart)
+        module.RELEASE["chart_sha256"] = "0" * 64  # danneggiato
+        with self.assertRaises(module.Fail):
+            installer.chart()
+        with self.assertRaises(ValueError):
+            stamp.stamp(source, dict(data, chart_sha256="0" * 64))
 
     def test_rejects_bad_data(self):
         source = (ROOT / "installer" / "sage_install.py").read_text()

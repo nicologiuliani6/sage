@@ -20,7 +20,11 @@ di Python presente. Si vuole un solo file da scaricare, verificare con il checks
   Le immagini manylinux sono state scartate: il loro Python non ha la libreria condivisa.
 - La CI prova l'eseguibile in container Rocky Linux 8 e 9 senza nessun programma nel `PATH`
   (quindi senza Python), e con `/tmp` montata `noexec` usando `TMPDIR` (baseline CIS).
-- La release pubblica `sage`, `sage-install.py` (per altre architetture) e i checksum.
+- La release pubblica `sage`, `sage-install.py` (per altre architetture) e i checksum. Il
+  chart è anche **dentro l'installer** (base64, con il suo sha256): l'installer non lo scarica,
+  quindi installer e chart non possono disallinearsi. È successo con la v0.5.3, compilata due
+  volte per lo stesso tag: il secondo giro aveva sovrascritto il chart scaricato dal primo
+  installer. Ora un giro che trova i file già pubblicati non li tocca.
 - **Comando di sistema**: al primo avvio l'eseguibile chiede di installarsi in
   `/usr/local/bin/sage` (`--bin` per un'altra cartella) con `sudo -n install`; se lì c'è già
   una copia diversa la aggiorna. Da quel momento si usa `sage` da qualsiasi cartella.

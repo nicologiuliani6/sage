@@ -2576,6 +2576,15 @@ class Installer:
     def chart(self) -> str:
         if self.args.chart:
             return self.args.chart
+        if RELEASE.get("chart_b64"):
+            # Chart dentro l'installer: niente download, e nessun disallineamento possibile
+            # tra installer e chart pubblicati (es. una release compilata due volte).
+            data = base64.b64decode(RELEASE["chart_b64"])
+            if hashlib.sha256(data).hexdigest() != RELEASE.get("chart_sha256"):
+                raise Fail("chart incluso nell'installer danneggiato: riscarica l'installer")
+            path = self.tmp / "sage-chart.tgz"
+            path.write_bytes(data)
+            return str(path)
         if RELEASE.get("chart_url"):
             data = download(RELEASE["chart_url"], RELEASE.get("chart_sha256"))
             path = self.tmp / "sage-chart.tgz"
@@ -2887,9 +2896,17 @@ class Installer:
             )
         # Il log va nel terminale normale, dove resta leggibile.
         ui.close()
-        print(f"\nLog del controllo (job {job}):\n")
+        print(f"\nLog del controllo (job {job}; Ctrl+C esce, il controllo continua):\n")
         cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
-        subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
+        try:
+            subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
+        except KeyboardInterrupt:
+            # Si smette solo di leggere il log: il Job gira nel cluster, indipendente da qui.
+            print(
+                f"\nSmesso di seguire il log: il controllo continua nel cluster. "
+                f"Per riprenderlo: {self.command_name()} --resume"
+            )
+            return 0
         # Il log finisce un attimo prima che il Job risulti completato: si aspetta l'esito.
         result = {}
         for _ in range(30):
@@ -3091,7 +3108,10 @@ def main(argv=None) -> int:
         return 1
     except (KeyboardInterrupt, EOFError):
         ui.close()
-        print("\ninterrotto")
+        print(
+            "\ninterrotto: si ferma solo questo programma. Quello che SAGE sta facendo nel "
+            "cluster (controllo o remediation) continua: sage --resume per vederlo."
+        )
         return 130
     finally:
         ui.close()
