@@ -150,8 +150,10 @@
           register: sage_node
           delegate_to: localhost
           become: false
+          # Durante il riavvio di un master l'API non risponde: il tentativo fallisce, non ha
+          # `resources`, e si riprova (default: niente errore nella condizione).
           until: >-
-            sage_node.resources | length == 1
+            sage_node.resources | default([]) | length == 1
             and (sage_node.resources[0].status.conditions
                  | selectattr('type', 'equalto', 'Ready')
                  | map(attribute='status') | first | default('False')) == 'True'
@@ -168,7 +170,7 @@
           delegate_to: localhost
           become: false
           until: >-
-            sage_apiserver.resources | length == 1
+            sage_apiserver.resources | default([]) | length == 1
             and (sage_apiserver.resources[0].status.conditions | default([])
                  | selectattr('type', 'equalto', 'Ready')
                  | map(attribute='status') | first | default('False')) == 'True'
