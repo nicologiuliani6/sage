@@ -430,11 +430,15 @@ def build_status(
 
 # ------------------------------------------------------------------ server
 
+# Sotto i 2 secondi le letture dall'API Kubernetes non servono a niente: i dati cambiano
+# al passo del controllore (poll_seconds).
+MIN_REFRESH = 2
+
 
 class Source:
     """Legge i dati dal cluster, con una piccola cache per non chiamare l'API a ogni clic."""
 
-    def __init__(self, kube: KubeApi, release: str, config_path: str, ttl: float = 15):
+    def __init__(self, kube: KubeApi, release: str, config_path: str, ttl: float = 5):
         self.kube = kube
         self.release = release
         self.config_path = config_path

@@ -76,6 +76,11 @@ a { color: var(--accent); }
 .sub { margin: 0; color: var(--muted); font-size: 12px; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 13px; }
 .meta b { color: var(--ink); font-weight: 600; }
+.live { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.live .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: pulse 2s ease-in-out infinite; }
+.live.stale .pulse { background: var(--crit); animation: none; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live .pulse { animation: none; } }
 
 main { max-width: 1280px; margin: 0 auto; padding: 20px 24px 40px; display: grid; gap: 26px; }
 section { min-width: 0; }
