@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
 # Release per un tag vX.Y.Z: chart impacchettato e installer con immagine, chart e Helm
 # fissati per digest e checksum. Richiede IMAGE (repo@sha256:...) dal job precedente.
+# La versione è quella del tag: chart, installer e immagine (SAGE_VERSION) la prendono da lì,
+# senza commit di aggiornamento della versione prima della release.
 source "$(dirname "$0")/lib.sh"
 : "${IMAGE:?}" "${GITHUB_REPOSITORY:?}" "${GITHUB_REF_NAME:?}" "${GH_TOKEN:?}"
 version="${GITHUB_REF_NAME#v}"
-py_version=$(python3 -c \
-  'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-chart_version=$(awk '/^version:/ {print $2}' chart/sage/Chart.yaml)
-app_version=$(awk -F'"' '/^appVersion:/ {print $2}' chart/sage/Chart.yaml)
-for v in "$py_version" "$chart_version" "$app_version"; do
-  if [ "$v" != "$version" ]; then
-    echo "versione $v (pyproject o Chart.yaml) diversa dal tag $version" && exit 1
-  fi
-done
+if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "tag $GITHUB_REF_NAME: serve la forma vX.Y.Z" && exit 1
+fi
 
 dist="$TOOLS/dist"
 rm -rf "$dist" && mkdir -p "$dist"
-helm package chart/sage -d "$dist"
+helm package chart/sage -d "$dist" --version "$version" --app-version "$version"
 chart="sage-${version}.tgz"
 chart_sha=$(sha256sum "$dist/$chart" | cut -d' ' -f1)
 base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"

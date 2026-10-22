@@ -9,12 +9,12 @@ leggere le decisioni e solo alla fine provare una remediation vera sul canary.
    `main` il workflow `publish` pubblica l'immagine su GHCR.
 2. Pacchetto `sage` su GHCR **pubblico**: dal profilo GitHub, *Packages → sage → Package
    settings → Change visibility → Public*. In alternativa l'installer crea un pull secret.
-3. Release: con la CI verde, un tag con la versione di `pyproject.toml` e `Chart.yaml`,
-   con `git tag v0.1.0 && git push origin v0.1.0` oppure dalla pagina *Releases → Draft a new
-   release* (tag nuovo `v0.1.0`). Il workflow `publish` allega alla release `sage-install.py`,
-   il chart e `SHA256SUMS`.
-4. Una chiave API di Groq (gratuita, da console.groq.com), oppure un altro endpoint compatibile
-   OpenAI. Si può anche partire senza LLM: SAGE usa solo le regole deterministiche.
+3. Release: con la CI verde, dalla pagina *Releases → Draft a new release* con un tag nuovo
+   `vX.Y.Z` (o `git tag vX.Y.Z && git push origin vX.Y.Z`). La versione viene dal tag. Il
+   workflow `publish` allega alla release `sage-install.py`, il chart e `SHA256SUMS`.
+4. Un endpoint LLM compatibile OpenAI con la sua chiave API (sul gemello si usa Groq:
+   `https://api.groq.com/openai/v1`). Si può anche partire senza LLM: SAGE usa solo le regole
+   deterministiche.
 
 ## 1. Installazione
 

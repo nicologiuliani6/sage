@@ -6,7 +6,11 @@ source "$(dirname "$0")/lib.sh"
 image="ghcr.io/${GITHUB_REPOSITORY,,}"
 tag="sha-${GITHUB_SHA::12}"
 echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-docker build \
+version_arg=()
+if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+  version_arg=(--build-arg "SAGE_VERSION=${GITHUB_REF_NAME#v}")
+fi
+docker build "${version_arg[@]}" \
   --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
   --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
   -t "$image:$tag" .

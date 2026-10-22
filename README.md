@@ -82,8 +82,8 @@ uv run sage check-config --config examples/config.example.yaml
 con il Python di sistema (3.9 su Rocky 9): solo libreria standard. I test dell'installer girano
 anche con 3.9: `uv run --no-project --python 3.9 python -m unittest tests.test_installer`.
 
-Release: con la CI verde, `git tag vX.Y.Z && git push origin vX.Y.Z` (stessa versione di
-`pyproject.toml` e `Chart.yaml`).
+Release: con la CI verde, un tag `vX.Y.Z` (da `git push` o dalla pagina *Releases* di GitHub).
+La versione viene dal tag: non serve aggiornarla nei file prima.
 
 ## Licenza
 

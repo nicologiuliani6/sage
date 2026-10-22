@@ -2,6 +2,6 @@ apiVersion: v2
 name: sage
 description: SAGE, SSVC-Aware Guarded Engine. CVE applicability and patch decisions for Kubernetes nodes
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.2
+appVersion: "0.2.2"
 kubeVersion: ">=1.27.0-0"
