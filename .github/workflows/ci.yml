@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# La logica sta negli script ci/*.sh: il workflow resta fisso e si tocca di rado.
+# Azioni di terze parti pinnate per SHA, mai per tag (ADR-0008).
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [python, policy, chart, image, secrets]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: bash "ci/${{ matrix.job }}.sh"
