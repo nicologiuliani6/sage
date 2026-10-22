@@ -284,6 +284,37 @@ class Registry(unittest.TestCase):
         self.assertTrue(inst.image_access(IMAGE, fake).startswith("unknown"))
 
 
+class LlmProbe(unittest.TestCase):
+    def probe(self, fake):
+        with mock.patch.object(inst.urllib.request, "urlopen", fake):
+            return inst.llm_probe("https://llm.example/v1", "k", "m1")
+
+    def test_sends_user_agent_and_key(self):
+        seen = {}
+
+        def fake(req, timeout=None):
+            seen.update(req.header_items())
+            return FakeResponse(json.dumps({"data": [{"id": "m1"}]}).encode())
+
+        self.assertIsNone(self.probe(fake))
+        # urllib normalizza i nomi: "User-agent". Senza, Cloudflare risponde 403.
+        self.assertTrue(seen["User-agent"].startswith("sage-install/"))
+        self.assertEqual(seen["Authorization"], "Bearer k")
+
+    def test_errors(self):
+        for code, text in ((401, "chiave rifiutata"), (403, "accesso negato"), (500, "HTTP 500")):
+
+            def fake(req, timeout=None, code=code):
+                raise http_error(code)
+
+            self.assertIn(text, self.probe(fake))
+
+        def other_models(req, timeout=None):
+            return FakeResponse(json.dumps({"data": [{"id": "m2"}]}).encode())
+
+        self.assertIn("es. m2", self.probe(other_models))
+
+
 class Selection(unittest.TestCase):
     KEYS = ["cp1", "w1", "w2", "u1"]
 

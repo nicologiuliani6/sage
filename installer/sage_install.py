@@ -97,6 +97,9 @@ KERNEL_MODES = [
     ("manual", "mai in automatico (es. nodi GPU con driver legati al kernel)"),
 ]
 PULL_ERRORS = ("ErrImagePull", "ImagePullBackOff", "InvalidImageName")
+# Alcuni servizi (es. Groq, dietro Cloudflare) rifiutano con 403 lo User-Agent
+# predefinito di urllib: ogni richiesta dell'installer si presenta con il suo.
+USER_AGENT = "sage-install/" + RELEASE.get("version", "dev")
 START_ERRORS = PULL_ERRORS + ("CreateContainerConfigError", "CreateContainerError")
 
 
@@ -428,7 +431,7 @@ def image_access(ref: str, opener=urllib.request.urlopen) -> str:
     url = f"https://{host}/v2/{path}/manifests/{reference}"
 
     def head(token: str | None):
-        headers = {"Accept": MANIFEST_TYPES}
+        headers = {"Accept": MANIFEST_TYPES, "User-Agent": USER_AGENT}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return opener(urllib.request.Request(url, headers=headers, method="HEAD"), timeout=15)
@@ -446,7 +449,10 @@ def image_access(ref: str, opener=urllib.request.urlopen) -> str:
         return "private"
     query = urllib.parse.urlencode({k: v for k, v in auth.items() if k in ("service", "scope")})
     try:
-        with opener(f"{auth['realm']}?{query}", timeout=15) as resp:
+        token_req = urllib.request.Request(
+            f"{auth['realm']}?{query}", headers={"User-Agent": USER_AGENT}
+        )
+        with opener(token_req, timeout=15) as resp:
             token = json.load(resp).get("token")
         head(token)
         return "public"
@@ -847,7 +853,8 @@ def run(args, input=None, check=True, timeout=None) -> subprocess.CompletedProce
 
 def download(url: str, sha256: str | None, limit: int = 200 * 1024 * 1024) -> bytes:
     try:
-        with urllib.request.urlopen(url, timeout=60) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=60) as resp:
             data = resp.read(limit + 1)
     except (urllib.error.URLError, OSError) as e:
         raise Fail(f"download di {url} fallito: {getattr(e, 'reason', e)}") from e
@@ -885,14 +892,20 @@ def valid_timezone(tz: str) -> bool:
 
 def llm_probe(base_url: str, key: str | None, model: str) -> str | None:
     """None se l'endpoint risponde e conosce il modello, altrimenti il problema."""
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    headers = {"User-Agent": USER_AGENT}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = json.load(resp)
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return f"chiave rifiutata (HTTP {e.code})"
+        if e.code == 401:
+            return "chiave rifiutata (HTTP 401)"
+        if e.code == 403:
+            return (
+                "accesso negato (HTTP 403): chiave senza permessi o richiesta bloccata dalla rete"
+            )
         return f"risposta HTTP {e.code}"
     except (urllib.error.URLError, OSError, ValueError) as e:
         return f"non raggiungibile da qui ({getattr(e, 'reason', e)})"
@@ -1516,7 +1529,9 @@ class Installer:
                 ui.ok(f"{endpoint['name']} risponde")
                 break
             ui.warn(f"{endpoint['name']}: {problem}")
-            if problem.startswith("chiave") and ui.yes("Inserisco un'altra chiave?"):
+            if problem.startswith(("chiave", "accesso")) and ui.yes(
+                "Inserisco un'altra chiave?", problem.startswith("chiave")
+            ):
                 key = ui.secret(f"Chiave API per {endpoint['name']}")
             elif "modello" in problem and ui.yes("Scelgo un altro modello?"):
                 endpoint["model"] = ui.ask("Modello", endpoint["model"])
