@@ -20,7 +20,8 @@ case "$*" in
   "-q history info last")
     id=41; [ -f "$FAKE_STATE/after" ] && id=42
     echo "Transaction ID : $id" ;;
-  "-y upgrade-minimal"*)
+  "-y upgrade --advisory"*)
+    if [ -n "$FAKE_DEPSOLVE_FAIL" ]; then echo "Error: Problem: cannot install both"; exit 1; fi
     touch "$FAKE_STATE/after"
     if [ -n "$FAKE_FAIL_UPDATE" ]; then echo "Error: scriptlet failed"; exit 1; fi
     echo "Complete!" ;;
@@ -48,7 +49,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def run_playbook(tmp_path, fail_update=False, **overrides):
+def run_playbook(tmp_path, fail_update=False, depsolve_fail=False, **overrides):
     bin_dir, state = tmp_path / "bin", tmp_path / "state"
     bin_dir.mkdir()
     state.mkdir()
@@ -70,6 +71,8 @@ def run_playbook(tmp_path, fail_update=False, **overrides):
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", FAKE_STATE=str(state))
     if fail_update:
         env["FAKE_FAIL_UPDATE"] = "1"
+    if depsolve_fail:
+        env["FAKE_DEPSOLVE_FAIL"] = "1"
     proc = subprocess.run(
         [
             "ansible-playbook",
@@ -94,7 +97,7 @@ def run_playbook(tmp_path, fail_update=False, **overrides):
 def test_success_applies_advisories_and_blocks_module(tmp_path):
     proc, calls, denylist, undone = run_playbook(tmp_path)
     assert proc.returncode == 0, proc.stdout
-    assert "-y upgrade-minimal --advisory=RLSA-2026:1" in calls
+    assert "-y upgrade --advisory=RLSA-2026:1" in calls
     assert "needs-restarting -r" in calls
     assert denylist.splitlines() == ["install algif_aead /bin/false", "blacklist algif_aead"]
     assert not undone
@@ -108,11 +111,20 @@ def test_failure_mid_transaction_rolls_back(tmp_path):
     assert denylist == ""
 
 
+def test_depsolve_failure_changes_nothing(tmp_path):
+    """dnf si ferma prima di installare (dipendenze): nessun rollback, nodo in servizio."""
+    proc, calls, denylist, undone = run_playbook(tmp_path, depsolve_fail=True)
+    assert proc.returncode != 0
+    assert not undone and not any("history undo" in c for c in calls)
+    assert "senza modificare il nodo" in proc.stdout
+    assert denylist == ""
+
+
 def test_light_mode_never_checks_reboot(tmp_path):
     proc, calls, denylist, _ = run_playbook(tmp_path, sage_light=True, sage_update_advisories=[])
     assert proc.returncode == 0, proc.stdout
     assert "needs-restarting -r" not in calls
-    assert not any("upgrade-minimal" in c for c in calls)
+    assert not any("upgrade" in c for c in calls)
     assert "install algif_aead /bin/false" in denylist
 
 

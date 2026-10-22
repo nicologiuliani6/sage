@@ -5,7 +5,7 @@
 #
 # Variabili (da -e @vars.json):
 #   sage_node_name           nome del nodo Kubernetes (obbligatorio)
-#   sage_update_advisories   advisory da applicare con dnf upgrade-minimal
+#   sage_update_advisories   advisory da applicare con dnf upgrade --advisory
 #   sage_remove_packages     pacchetti da rimuovere
 #   sage_denylist_modules    moduli del kernel da bloccare
 #   sage_drain_mode          evict | wait-empty
@@ -103,9 +103,13 @@
           ansible.builtin.set_fact:
             sage_applied: true
 
+        # upgrade, non upgrade-minimal: con molte advisory insieme la versione "minima" di
+        # una può essere incompatibile con quella richiesta da un'altra (visto sul gemello:
+        # python3 e python-unversioned-command). Si portano i pacchetti delle advisory alla
+        # versione più recente, che è coerente e contiene tutte le correzioni.
         - name: Applica le advisory di sicurezza
           ansible.builtin.command:
-            argv: "{{ ['dnf', '-y', 'upgrade-minimal'] + (sage_update_advisories | map('regex_replace', '^', '--advisory=') | list) }}"
+            argv: "{{ ['dnf', '-y', 'upgrade'] + (sage_update_advisories | map('regex_replace', '^', '--advisory=') | list) }}"
           when: sage_update_advisories | length > 0
           register: sage_update
           changed_when: "'Nothing to do' not in sage_update.stdout"
@@ -123,6 +127,7 @@
             create: true
             mode: "0644"
           loop: "{{ ['install', 'blacklist'] | product(sage_denylist_modules) | list }}"
+          register: sage_blocks
 
         - name: Ultima transazione dnf dopo l'intervento
           ansible.builtin.command: dnf -q history info last
@@ -219,14 +224,6 @@
           ansible.builtin.debug:
             msg: "remediation fallita su {{ sage_node_name }}: {{ ansible_failed_result.msg | default('vedi sopra') }}"
 
-        - name: Nulla era stato modificato - rimetti il nodo in servizio
-          kubernetes.core.k8s_drain:
-            name: "{{ sage_node_name }}"
-            state: uncordon
-          delegate_to: localhost
-          become: false
-          when: sage_disrupt | bool and not sage_applied | bool
-
         # L'errore può arrivare anche a metà di dnf: si legge la transazione adesso.
         - name: Ultima transazione dnf al momento dell'errore
           ansible.builtin.command: dnf -q history info last
@@ -235,6 +232,27 @@
           failed_when: false
           when: sage_applied | bool
 
+        # Modificato davvero solo se dnf ha registrato una transazione nuova o sono stati
+        # scritti blocchi di moduli. Un dnf che si ferma prima (dipendenze non risolte)
+        # non tocca il nodo: lo si rimette in servizio.
+        - name: Il nodo è stato modificato?
+          ansible.builtin.set_fact:
+            sage_modified: >-
+              {{ (sage_applied | bool)
+                 and ((sage_tx_now_id != sage_tx_prev_id)
+                      or (sage_blocks is defined and sage_blocks.changed | default(false))) }}
+          vars:
+            sage_tx_now_id: "{{ sage_tx_now.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
+            sage_tx_prev_id: "{{ sage_tx_before.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
+
+        - name: Nulla era stato modificato - rimetti il nodo in servizio
+          kubernetes.core.k8s_drain:
+            name: "{{ sage_node_name }}"
+            state: uncordon
+          delegate_to: localhost
+          become: false
+          when: sage_disrupt | bool and not sage_modified | bool
+
         - name: Annulla la transazione dnf di SAGE
           ansible.builtin.command: "dnf -y history undo {{ sage_tx_id }}"
           vars:
@@ -242,7 +260,7 @@
             sage_tx_id: "{{ sage_tx_now.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
             sage_tx_prev: "{{ sage_tx_before.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
           when:
-            - sage_applied | bool
+            - sage_modified | bool
             - sage_tx_id | length > 0
             - sage_tx_id != sage_tx_prev
           register: sage_undo
@@ -262,11 +280,11 @@
             line: "{{ item[0] }} {{ item[1] }}{{ ' /bin/false' if item[0] == 'install' else '' }}"
             state: absent
           loop: "{{ ['install', 'blacklist'] | product(sage_denylist_modules) | list }}"
-          when: sage_applied | bool
+          when: sage_modified | bool
 
         - name: Fallimento
           ansible.builtin.fail:
             msg: >-
               {{ 'Remediation fallita dopo aver modificato il nodo: rollback eseguito, nodo lasciato in cordon per un controllo manuale.'
-                 if sage_applied | bool else
-                 'Remediation non avviata (drain non riuscito): nodo rimesso in servizio.' }}
+                 if sage_modified | bool else
+                 'Remediation fallita senza modificare il nodo: nodo rimesso in servizio.' }}
