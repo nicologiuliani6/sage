@@ -295,3 +295,26 @@ def test_missing_cve_record_is_not_cached_and_llm_not_called():
     )
     analysis = analyzer.run({"w1": kernel_report()}, groups_for(cfg, "w1"), {}, {}, set(), {})
     assert fake.asked == [] and analysis.cache == {}
+
+
+@needs_opa
+def test_one_llm_call_per_source_package_and_cache_saved_during_run(monkeypatch):
+    cfg = base_config()
+    pkgs = {}
+    for name in ("glibc", "glibc-common", "glibc-langpack-en"):
+        pkg = package([advisory("RLSA-1", ["CVE-2026-0010"])])
+        pkg["context"]["source"] = "glibc"
+        pkgs[name] = pkg
+    reports = {"w1": report(pkgs)}
+    fake = FakeLlm()
+    chain = LlmChain(cfg.llm, env={}, post=fake)
+    saved = []
+    analyzer = Analyzer(
+        cfg, chain, RECORDS.get, opa.decide, NOW, save_cache=lambda c: saved.append(dict(c))
+    )
+    cache = {}
+    monkeypatch.setattr("sage.analyze.SAVE_EVERY", 1)
+    analyzer.run(reports, groups_for(cfg, "w1"), {}, cache, set(), {})
+    assert fake.asked == ["CVE-2026-0010"]  # una sola chiamata per i tre sottopacchetti
+    assert list(cache) == ["CVE-2026-0010|glibc"]
+    assert saved and "CVE-2026-0010|glibc" in saved[-1]

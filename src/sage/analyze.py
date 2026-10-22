@@ -24,6 +24,9 @@ from sage.llm import LlmChain
 
 log = logging.getLogger(__name__)
 
+# Ogni quante risposte nuove dell'LLM si salva la cache durante il giro.
+SAVE_EVERY = 10
+
 SEVERITY_RANK = {"Critical": 4, "Important": 3, "Moderate": 2, "Low": 1}
 FALLBACK_RECHECK = timedelta(hours=24)
 OPA_CONTEXT_KEYS = (
@@ -119,18 +122,24 @@ class Analyzer:
         fetch_record: RecordFetcher,
         decide: Decider,
         now: datetime,
+        save_cache: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.cfg = cfg
         self.chain = chain
         self.fetch_record = fetch_record
         self.decide = decide
         self.now = now
+        # Salvataggio della cache durante il giro: un giro interrotto non perde le risposte.
+        self.save_cache = save_cache
+        self.new_entries = 0
 
     # ------------------------------------------------------------ cache e LLM
 
     def _conditions(
         self, cve: str, package: str, severity: str, cache: dict[str, Any]
     ) -> dict[str, Any] | None:
+        """Condizioni della CVE per il pacchetto (sorgente): una risposta vale per tutti i
+        sottopacchetti, es. glibc, glibc-common e glibc-langpack-en."""
         key = f"{cve}|{package}"
         entry = cache.get(key)
         if entry and entry.get("v") == llm.PROMPT_VERSION:
@@ -159,6 +168,10 @@ class Analyzer:
             "at": self.now.isoformat(),
         }
         cache[key] = entry
+        self.new_entries += 1
+        if self.save_cache and self.new_entries % SAVE_EVERY == 0:
+            self.save_cache(cache)
+            log.debug("cache LLM salvata (%d risposte nuove)", self.new_entries)
         return entry
 
     # ------------------------------------------------------------ analisi
@@ -209,6 +222,10 @@ class Analyzer:
             ordered = sorted(all_cves, key=lambda c: (-(epss.get(c) or 0), c))
             skip_llm = (not kev_available) or any(c in kev for c in all_cves)
             undecided = {node for node, _ in entries}
+            source = next(
+                (p["context"].get("source") for _, p in entries if p["context"].get("source")),
+                name,
+            )
             log.info(
                 "pacchetto %d/%d %s: %d CVE su %d nodi%s",
                 index,
@@ -222,7 +239,7 @@ class Analyzer:
             for cve in ordered:
                 if skip_llm or not undecided:
                     break
-                entry = self._conditions(cve, name, sev.get(cve, ""), cache)
+                entry = self._conditions(cve, source, sev.get(cve, ""), cache)
                 if entry is None:
                     break  # budget esaurito o LLM non disponibile: il resto resta "unknown"
                 record = entry.get("record") or {}

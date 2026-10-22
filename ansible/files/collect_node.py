@@ -254,6 +254,16 @@ def removal_simulation(name):
     return parse_remove_simulation(out, name)
 
 
+def source_name(out):
+    """'glibc-2.34-100.el9_4.2.src.rpm' -> 'glibc' (pacchetto sorgente, comune ai
+    sottopacchetti come glibc-common o glibc-langpack-en)."""
+    first = out.splitlines()[0].strip() if out.strip() else ""
+    if not first.endswith(".src.rpm"):
+        return None
+    parts = first[: -len(".src.rpm")].rsplit("-", 2)
+    return parts[0] if len(parts) == 3 and parts[0] else None
+
+
 def package_context(name, exes, mapped, listening, needed_by=None):
     installed = run(["rpm", "-q", "--qf", "%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n", name]).splitlines()
     files = run(["rpm", "-ql", name]).splitlines()
@@ -282,6 +292,7 @@ def package_context(name, exes, mapped, listening, needed_by=None):
         "units": unit_states(units),
         "privileged_files": privileged_files(name),
         "required_by": required_by,
+        "source": source_name(run(["rpm", "-q", "--qf", "%{SOURCERPM}\n", name])),
         # Servizio del nodo (o voce aggiunta) che ha bisogno di questo pacchetto.
         "needed_by": needed_by,
     }

@@ -171,6 +171,9 @@ def fake_run(cmd):
         if cmd[-1] == "libexample":
             return "dependent-pkg-2.9.4-6.el9_4.x86_64\n"
         return f"no package requires {cmd[-1]}\n"
+    if cmd[:2] == ["rpm", "-q"] and "SOURCERPM" in cmd[3]:
+        sources = {"cockpit-ws": "cockpit-344-2.el9", "kernel-core": "kernel-5.14.0-500.el9"}
+        return sources.get(cmd[-1], cmd[-1] + "-1.0-1.el9") + ".src.rpm\n"
     if cmd[:2] == ["rpm", "-q"] and "FILECAPS" in cmd[3]:
         if cmd[-1] == "NetworkManager":
             return "-rwsr-xr-x||/usr/sbin/nm-helper\n-rwxr-xr-x||/usr/sbin/NetworkManager\n"
@@ -363,3 +366,12 @@ def test_container_processes_are_ignored(collector, tmp_path):
 def test_parse_args(collector):
     assert collector.parse_args(["--extra", "a, b,,c"]) == ["a", "b", "c"]
     assert collector.parse_args([]) == []
+
+
+def test_source_package(report, collector):
+    assert report["packages"]["cockpit-ws"]["context"]["source"] == "cockpit"
+    assert report["packages"]["kernel-core"]["context"]["source"] == "kernel"
+    assert report["packages"]["NetworkManager"]["context"]["source"] == "NetworkManager"
+    assert collector.source_name("glibc-2.34-100.el9_4.2.src.rpm\n") == "glibc"
+    assert collector.source_name("(none)\n") is None
+    assert collector.source_name("") is None
