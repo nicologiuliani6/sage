@@ -671,11 +671,21 @@ class Interactive(unittest.TestCase):
         llm, _ = self.answer(["3"], lambda: self.installer.configure_llm(current, []))
         self.assertEqual(llm, {"endpoints": []})
 
-    def test_custom_schedule(self):
-        cron = self.answer(["4", "15 2 * * *"], lambda: self.installer.choose_schedule(None))
-        self.assertEqual(cron, "15 2 * * *")
-        cron = self.answer([""], lambda: self.installer.choose_schedule("15 2 * * *"))
-        self.assertEqual(cron, "15 2 * * *")
+    def test_schedule(self):
+        choose = self.installer.choose_schedule
+        self.assertEqual(
+            self.answer(["4", "15 2 * * *"], lambda: choose(None, False)), ("15 2 * * *", False)
+        )
+        # Espressione non standard: proposta come "come ora".
+        self.assertEqual(
+            self.answer([""], lambda: choose("15 2 * * *", False)), ("15 2 * * *", False)
+        )
+        # Giri sospesi: la scelta predefinita è "mai", e la frequenza resta per dopo.
+        self.assertEqual(self.answer([""], lambda: choose("0 3 * * *", True)), ("0 3 * * *", True))
+        self.assertEqual(self.answer(["5"], lambda: choose(None, False)), ("0 */6 * * *", True))
+        self.assertEqual(
+            self.answer(["2"], lambda: choose("0 3 * * *", True)), ("0 */12 * * *", False)
+        )
 
 
 # ------------------------------------------------------------------ prova completa
@@ -767,7 +777,6 @@ class EndToEnd(unittest.TestCase):
                 "",  # ogni 6 ore
                 "Europe/Rome",
                 "",  # nessun proxy
-                "",  # giri automatici attivi
                 "",  # procedo
                 "test sul gemello",  # nota per lo storico
                 "",  # primo giro subito

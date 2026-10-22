@@ -1712,7 +1712,9 @@ class Installer:
 
         # 5. frequenza e rete
         ui.step(5, total, "Frequenza e rete")
-        schedule = self.choose_schedule(current.get("schedule"))
+        # Per una nuova installazione i giri automatici partono attivi, salvo "mai".
+        suspended = bool(current.get("suspend", True)) and not new
+        schedule, suspend = self.choose_schedule(current.get("schedule"), suspended)
         timezone_name = ui.ask(
             "Fuso orario",
             current.get("timeZone") or local_timezone(),
@@ -1733,17 +1735,6 @@ class Installer:
             or None
         )
         proxy = self.choose_proxy(current, [n.ip for n in nodes if n.ip], api_ip)
-        if new:
-            suspend = not ui.yes(
-                "Attivo i giri automatici?",
-                help=(
-                    "Una nuova installazione è sempre in simulazione: i giri analizzano i "
-                    "nodi e dicono cosa farebbero, senza toccarli. Il passaggio al vivo si "
-                    "fa dopo, rilanciando l'installer."
-                ),
-            )
-        else:
-            suspend = bool(current.get("suspend", True))
 
         image = self.args.image or RELEASE.get("image") or image_ref(current)
         if not image:
@@ -1805,7 +1796,7 @@ class Installer:
                 f"utente SSH {user}",
                 "LLM: " + (llm_text(llm) or "nessuno"),
                 f"giri: {schedule} ({timezone_name}), "
-                + ("sospesi" if suspend else "attivi")
+                + ("solo manuali" if suspend else "automatici")
                 + ", simulazione",
             ]
             if key_note:
@@ -1834,7 +1825,7 @@ class Installer:
         lines.append(f"SSH        utente {user}, chiave dedicata")
         lines.append(f"LLM        {llm_text(llm) or 'nessuno: solo regole deterministiche'}")
         mode = "simulazione" if values["dryRun"] else "MODALITÀ REALE"
-        when = "sospesi" if values["suspend"] else schedule
+        when = "solo quando li lanci tu" if values["suspend"] else schedule
         lines.append(f"Giri       {when} ({values['timeZone']}), {mode}")
         return "\n".join(lines)
 
@@ -2224,28 +2215,38 @@ class Installer:
         return endpoint, key or None
 
     # --- frequenza e rete
-    def choose_schedule(self, current: str | None) -> str:
+    def choose_schedule(self, current: str | None, suspended: bool) -> tuple[str, bool]:
+        """(espressione cron, giri automatici sospesi)."""
         options = [f"{text} ({cron})" for text, cron in SCHEDULES]
         crons = [cron for _, cron in SCHEDULES]
-        default = crons.index(current) if current in crons else 0
         if current and current not in crons:
             options.insert(0, f"come ora ({current})")
             crons.insert(0, current)
         options.append("personalizzata (espressione cron)")
+        options.append("mai in automatico: solo quando lo lanci tu")
+        never = len(options) - 1
+        default = never if suspended else (crons.index(current) if current in crons else 0)
         pick = self.ui.choose(
             "Ogni quanto SAGE controlla i nodi?",
             options,
             default,
-            help="Analisi e remediation avanzano a ogni giro.",
+            help=(
+                "A ogni giro SAGE analizza i nodi e decide cosa fare; in simulazione dice "
+                'cosa farebbe senza toccarli. Con "mai in automatico" i giri partono solo '
+                "dal menu dell'installer (Lancia un giro adesso)."
+            ),
         )
+        if pick == never:
+            return current or crons[0], True
         if pick < len(crons):
-            return crons[pick]
-        return self.ui.ask(
+            return crons[pick], False
+        cron = self.ui.ask(
             "Espressione cron",
-            None,
+            current if current and current not in crons else None,
             lambda v: None if len(v.split()) == 5 else "servono 5 campi",
             help="Cinque campi: minuto ora giorno mese giorno-della-settimana.",
         )
+        return cron, False
 
     def choose_proxy(self, current: dict, ips, api_ip) -> list[dict]:
         env = {e.get("name"): e.get("value") for e in current.get("extraEnv") or []}
