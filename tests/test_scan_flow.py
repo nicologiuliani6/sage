@@ -23,7 +23,7 @@ CONFIG = {
             "allow_remove": True,
         },
     ],
-    "policy": {"idle_scans_required": 1},
+    "policy": {"idle_scans_required": 1, "idle_days_required": 0},
 }
 
 TEMPLATE = {
@@ -113,7 +113,8 @@ def test_scan_dry_run_writes_report_and_creates_nothing(monkeypatch, tmp_path, c
     assert rep["plans"]["w1"]["remove_packages"] == ["cockpit-ws"]
     assert rep["dry_run"] is True and rep["vex"]["statements"] == []
     assert cluster.created == []
-    assert cluster.store["sage-state"]["idle"] == {"w1|cockpit-ws": 1, "w2|cockpit-ws": 1}
+    idle = cluster.store["sage-state"]["idle"]
+    assert set(idle) == {"w1|cockpit-ws", "w2|cockpit-ws"} and idle["w1|cockpit-ws"]["count"] == 1
 
 
 @needs_opa

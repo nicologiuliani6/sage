@@ -72,3 +72,18 @@ Inoltre, sempre nel senso del fail closed:
 - `systemctl show` stampa ExecStart prima di Id: le unit si leggono a blocchi, e il file della
   unit si cerca anche direttamente nelle cartelle di systemd.
 - il riepilogo avvisa se un nodo ha servizi ma nessun pacchetto ricondotto a loro.
+
+## Inutilizzato a tempo e catena di avvio (2026-10-23)
+
+Il primo giro con il controllore in loop (ADR-0015) ha mostrato due problemi:
+
+- **Tre controlli non bastano più.** Con il CronJob ogni 6 ore, tre controlli erano 18 ore; con
+  il loop sono un'ora e mezza. Strumenti usati a mano o di notte (ncurses, sg3_utils, plugin di
+  sudo) risultavano "non affetti" troppo presto. Ora servono **entrambi**: almeno
+  `idle_scans_required` controlli consecutivi e almeno `idle_days_required` giorni (predefinito
+  7). Un controllo in cui il pacchetto è in uso azzera il periodo; i conteggi salvati dalle
+  versioni precedenti ripartono da zero giorni.
+- **La catena di avvio non gira nei processi.** grub2, shim, dracut, microcodice e firmware li
+  esegue l'avvio del nodo: che nessun processo li usi non significa niente. Per loro le
+  condizioni sull'uso restano "non verificabili" (si aggiorna), e la policy OPA lo garantisce
+  comunque: un pacchetto di avvio non è mai "non affetto" perché inutilizzato.

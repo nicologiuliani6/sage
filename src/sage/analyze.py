@@ -68,24 +68,54 @@ class PackageDecision:
 @dataclass
 class Analysis:
     decisions: dict[str, list[PackageDecision]]
-    idle: dict[str, int]
+    idle: dict[str, dict[str, Any]]
     cache: dict[str, Any]
     llm_calls: int
     kev_available: bool
 
 
-def update_idle(reports: dict[str, dict[str, Any]], previous: dict[str, int]) -> dict[str, int]:
-    """Scansioni consecutive in cui ogni (nodo, pacchetto) è risultato inutilizzato."""
-    idle: dict[str, int] = {}
+def update_idle(
+    reports: dict[str, dict[str, Any]], previous: dict[str, Any], now: datetime
+) -> dict[str, dict[str, Any]]:
+    """Per ogni (nodo, pacchetto) inutilizzato: controlli consecutivi e da quando.
+
+    Un controllo in cui il pacchetto è in uso azzera tutto. Le voci di versioni precedenti
+    (solo il numero di controlli) ripartono da adesso: nel dubbio, il periodo ricomincia.
+    """
+    idle: dict[str, dict[str, Any]] = {}
     for node, report in reports.items():
         for name, pkg in report.get("packages", {}).items():
             if pkg.get("context", {}).get("idle"):
                 key = f"{node}|{name}"
-                idle[key] = previous.get(key, 0) + 1
-    for key, count in previous.items():
-        if key.split("|", 1)[0] not in reports:  # nodo non raggiunto: si conserva il conteggio
-            idle[key] = count
+                old = previous.get(key)
+                if isinstance(old, dict):
+                    idle[key] = {"count": old.get("count", 0) + 1, "since": old["since"]}
+                else:
+                    idle[key] = {"count": (old or 0) + 1, "since": now.isoformat()}
+    for key, value in previous.items():
+        if key.split("|", 1)[0] not in reports:  # nodo non raggiunto: si conserva
+            idle[key] = (
+                value if isinstance(value, dict) else {"count": value, "since": now.isoformat()}
+            )
     return idle
+
+
+def idle_confirmed(entry: Any, policy, now: datetime) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    since = datetime.fromisoformat(entry["since"])
+    return entry.get("count", 0) >= policy.idle_scans_required and now - since >= timedelta(
+        days=policy.idle_days_required
+    )
+
+
+def idle_label(policy) -> str:
+    """'da 7 giorni (almeno 3 controlli)' per le prove leggibili."""
+    if policy.idle_days_required:
+        return (
+            f"da {policy.idle_days_required} giorni (almeno {policy.idle_scans_required} controlli)"
+        )
+    return f"da {policy.idle_scans_required} controlli consecutivi"
 
 
 def cve_severity(pkg: dict[str, Any]) -> dict[str, str]:
@@ -180,13 +210,14 @@ class Analyzer:
         self,
         reports: dict[str, dict[str, Any]],
         groups: dict[str, NodeGroup | None],
-        idle_previous: dict[str, int],
+        idle_previous: dict[str, Any],
         cache: dict[str, Any],
         kev: set[str] | None,
         epss: dict[str, float],
     ) -> Analysis:
-        idle = update_idle(reports, idle_previous)
-        required = self.cfg.policy.idle_scans_required
+        idle = update_idle(reports, idle_previous, self.now)
+        policy = self.cfg.policy
+        label = idle_label(policy)
         kev_available = kev is not None
         kev = kev or set()
 
@@ -257,8 +288,8 @@ class Analyzer:
                             ctx,
                             report.get("kernel", {}),
                             record,
-                            idle.get(f"{node}|{name}", 0) >= required,
-                            required,
+                            idle_confirmed(idle.get(f"{node}|{name}"), policy, self.now),
+                            label,
                         )
                         for c in answer["conditions"]
                     ]
@@ -333,12 +364,18 @@ class Analyzer:
                         "package": {
                             "name": name,
                             "context": {k: ctx.get(k) for k in OPA_CONTEXT_KEYS},
-                            "idle_confirmed": idle.get(f"{node}|{name}", 0) >= required,
+                            "idle_confirmed": idle_confirmed(
+                                idle.get(f"{node}|{name}"), policy, self.now
+                            ),
                         },
                         "cves": [
                             {
                                 "kev": c.kev,
-                                "applicability": {"status": c.status, "verified": c.verified},
+                                "applicability": {
+                                    "status": c.status,
+                                    "verified": c.verified,
+                                    "justification": c.justification,
+                                },
                             }
                             for c in cve_list
                         ],

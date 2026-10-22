@@ -7,7 +7,7 @@
 #   package.name              nome del pacchetto
 #   package.context           contesto raccolto sul nodo (processi, librerie, porte, unit)
 #   package.idle_confirmed    inutilizzato da abbastanza scansioni consecutive
-#   cves[]                    kev, applicability.status, applicability.verified
+#   cves[]                    kev, applicability.status, .verified, .justification
 #   proposal                  mitigazione verificata: action = "mitigate", mitigation.verified
 #
 # Parametri da configurazione (data.sage.config):
@@ -17,6 +17,8 @@
 #   - nel dubbio si aggiorna (fail closed)
 #   - una CVE nel catalogo KEV non è mai "non affetto" né solo mitigata
 #   - "non affetto" solo se verificato sul nodo, per tutte le CVE, con il KEV letto
+#   - un pacchetto della catena di avvio (bootloader, initramfs, microcodice, firmware) non è
+#     mai "non affetto" perché nessun processo lo usa: lo esegue l'avvio del nodo
 package sage.decision
 
 default action := "update"
@@ -31,6 +33,7 @@ action := "skip" if {
 	cve.kev == true
 } else := "not_affected" if {
 	input.kev_available == true
+	not boot_unused
 	count(input.cves) > 0
 	every cve in input.cves {
 		cve.applicability.status == "not_affected"
@@ -57,11 +60,25 @@ group_known if {
 
 is_kernel if startswith(input.package.name, "kernel")
 
+boot_patterns := ["grub2*", "shim*", "dracut*", "microcode_ctl", "*-firmware*", "linux-firmware*"]
+
+is_boot if {
+	some pattern in boot_patterns
+	glob.match(pattern, ["/"], input.package.name)
+}
+
+# "Non affetto" per un pacchetto di avvio solo perché nessun processo lo usa: non vale.
+boot_unused if {
+	is_boot
+	some cve in input.cves
+	cve.applicability.justification == "vulnerable_code_not_in_execute_path"
+}
+
 autostart := {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias", "indirect"}
 
 protected if {
 	some pattern in data.sage.config.protected_packages
-	glob.match(pattern, [], input.package.name)
+	glob.match(pattern, ["/"], input.package.name)
 }
 
 removal_safe if {

@@ -88,8 +88,9 @@ kubectl -n sage get configmap sage-report -o jsonpath='{.binaryData.data\.json\.
 ```
 
 Cosa aspettarsi al primo giro:
-- quasi tutto `aggiorna`: è normale. Le rimozioni richiedono più scansioni consecutive
-  (`idle_scans_required`), e con il budget LLM non tutte le CVE vengono analizzate subito.
+- quasi tutto `aggiorna`: è normale. "Inutilizzato" (e quindi non affetto o da rimuovere)
+  richiede almeno `idle_scans_required` controlli e `idle_days_required` giorni (7), e con i
+  limiti dell'LLM non tutte le CVE vengono analizzate subito.
 - le risposte dell'LLM restano in cache (`sage-llm-cache`): i giri successivi chiamano il modello
   solo per le CVE nuove.
 
@@ -99,7 +100,7 @@ Rilancia `python3 sage-install.py` quando vuoi cambiare qualcosa: parte dalla co
 attuale. Da provare:
 - *Riconfigura → Modifica un gruppo*: attiva rimozioni e mitigazioni sul gruppo worker e guarda
   cosa proporrebbe.
-- `dnf install -y cockpit` su un worker, senza avviarlo: dopo `idle_scans_required` giri dovrebbe
+- `dnf install -y cockpit` su un worker, senza avviarlo: dopo `idle_days_required` giorni dovrebbe
   comparire tra le rimozioni.
 
 ### Servizi aggiuntivi dei nodi

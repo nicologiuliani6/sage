@@ -24,7 +24,8 @@ verifica sul nodo con controlli di coerenza indipendenti dall'LLM:
   caricamento è disabilitato; "non caricato" non basta.
 - `network_service`: accettata solo se il vettore CVSS è di rete.
 - `component_in_use`: non accettata per pacchetti con file setuid, setgid o con capability.
-- "inutilizzato" deve valere per `idle_scans_required` scansioni consecutive, non per un'istantanea.
+- "inutilizzato" deve valere per `idle_scans_required` controlli consecutivi e almeno
+  `idle_days_required` giorni, non per un'istantanea (ADR-0013).
 
 `not_affected` vale solo se una condizione è falsa e verificata, per tutte le CVE del pacchetto.
 Una condizione non verificabile rende la CVE applicabile.
