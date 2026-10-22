@@ -2,43 +2,37 @@
 
 ## Fatto
 
-- [x] **M0** repo, configurazione validata senza hardcoding, CI, immagine, chart
-- [x] **M2** scan nel cluster: inventario dall'API Kubernetes, gruppi, raccolta via SSH
-- [x] **M4** livello LLM: catena di endpoint, cache, schema, budget, solo dati pubblici
-- [x] **M4** verifica delle condizioni sul nodo (moduli, servizi, uso) con controlli di coerenza
-- [x] **M5** decisione OPA (fail closed, KEV, rimozione e mitigazione sicure), priorità, report, VEX
-- [x] **M6** remediation: Job per nodo, gruppi in ordine e canary, riserva LLM, rollback, stop e
-      ripresa
+- [x] Configurazione validata senza hardcoding, CI, immagine e chart con dipendenze fissate
+- [x] Raccolta dai nodi via SSH: advisory, contesto dei pacchetti, kernel, profilo dei servizi
+      ([ADR-0013](adr/0013-profilo-del-nodo.md))
+- [x] LLM: catena di endpoint, cache, schema, solo dati pubblici delle CVE
+- [x] Verifica delle condizioni sul nodo (moduli, servizi, uso) con controlli di coerenza
+- [x] Decisione OPA (fail closed, KEV, rimozione e mitigazione sicure), priorità SSVC, report, VEX
+- [x] Remediation per nodo con rollback, stop e ripresa
 - [x] Controllore sempre acceso che fa il giro dei nodi, con ripresa dopo un'interruzione e
       scadenza per le CVE gravi ([ADR-0015](adr/0015-controllore-in-loop.md))
-- [x] Installer interattivo per qualsiasi cluster e release con la CI
-      ([ADR-0011](adr/0011-installer-interattivo.md))
+- [x] Installer interattivo come eseguibile unico, con storico delle modifiche
+      ([ADR-0011](adr/0011-installer-interattivo.md), [ADR-0016](adr/0016-installer-eseguibile-unico.md))
 - [x] Dashboard web di sola lettura ([ADR-0014](adr/0014-dashboard-sola-lettura.md))
 
 ## Da fare
 
-### Test sul gemello ([guida](test-gemello.md))
-- [ ] Workflow nella repo, prima immagine su GHCR resa pubblica, release v0.1.0
-- [ ] Installazione con l'installer dal master
-- [ ] Giri in simulazione, lettura delle decisioni
-- [ ] Remediation vera sul canary
+### Affidabilità
+- [ ] Cluster con 3 master: verifica del giro con quorum etcd
+- [ ] Il controllore che si spegne libera subito il Lease (oggi il successivo aspetta fino a 2 minuti)
+- [ ] Immagine base pinnata per digest
+- [ ] Prompt di prova sull'LLM come controllo di salute (oggi: `health_urls`)
 
-### Cluster gemello in HA (M1)
-- [ ] 3 master con etcd, bastion dedicato
-- [ ] Nodo GPU (in attesa: API del modello o server da gestire?)
-
-### Applicabilità deterministica (M3)
+### Applicabilità deterministica
 - [ ] Livello versione: Red Hat CSAF VEX (`known_not_affected`) per le CVE delle advisory
 - [ ] Livello configurazione kernel: file colpiti e configurazione compilata del nodo
+- [ ] Integrazione con `certcc-ssvc` per l'albero SSVC completo
 
-### Valutazione (M7)
+### Valutazione
 - [ ] Confronto con dnf-automatic (security): quanti aggiornamenti, quanti riavvii evitati
 - [ ] Accordo con le decisioni di un esperto su un campione
 - [ ] Stabilità delle risposte del modello
 
-### Miglioramenti
-- [ ] Immagine base pinnata per digest
-- [ ] Prompt di prova sull'LLM come controllo di salute del gruppo LLM (oggi: `health_urls`)
-- [ ] Integrazione con `certcc-ssvc` per l'albero SSVC completo
-- [ ] Installer: supporto ai nodi non RHEL (apt) quando la remediation lo avrà
+### Estensioni
+- [ ] Altre distribuzioni (Debian, Ubuntu, SUSE): un driver per famiglia di pacchetti
 - [ ] Dashboard: azioni operative (spegni, giro, riprendi) con login tramite token Kubernetes

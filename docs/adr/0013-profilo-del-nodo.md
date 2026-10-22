@@ -5,7 +5,7 @@ Stato: accettata (2026-10-22)
 ## Contesto
 
 Per decidere se un pacchetto è "in uso" SAGE guardava solo il momento della scansione: processi
-in esecuzione, librerie caricate, porte in ascolto, unit attive. Il primo test sul gemello ha
+in esecuzione, librerie caricate, porte in ascolto, unit attive. Il primo test su un cluster reale ha
 mostrato due limiti.
 
 - I processi dei container sono visibili anche dal nodo. Le librerie che usano stanno
@@ -52,7 +52,7 @@ quindi calcolare.
 - Un container privilegiato che esegue programmi del nodo (es. con `chroot` sul filesystem
   dell'host) viene escluso come gli altri: caso raro, da dichiarare tra i servizi aggiuntivi.
 
-## Correzioni dopo il primo giro sul gemello (2026-10-22)
+## Correzioni dopo il primo giro su un cluster reale (2026-10-22)
 
 Il primo giro con il profilo ha trovato 0 pacchetti necessari su ogni nodo e ha dichiarato
 "nessun processo usa il pacchetto" anche per glibc. Due cause, entrambe nel collector:

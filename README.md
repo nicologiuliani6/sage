@@ -1,104 +1,107 @@
 # SAGE
 
-**SSVC-Aware Guarded Engine**: decide se una CVE tocca davvero un nodo Kubernetes e cosa fare.
-
-Per ogni pacchetto vulnerabile SAGE si chiede *"questa CVE ci tocca?"* e sceglie un'azione:
+**SSVC-Aware Guarded Engine**: patch management guidato dalle CVE per i nodi di un cluster
+Kubernetes. Per ogni pacchetto vulnerabile di ogni nodo SAGE si chiede *"questa CVE ci tocca
+davvero?"*, decide cosa fare e lo fa, un nodo alla volta.
 
 | Azione | Quando |
 |---|---|
+| `update` | la CVE si applica, oppure c'è un dubbio |
 | `not_affected` | la CVE non si applica, **verificato sul nodo**: nessun aggiornamento, viene scritto un VEX |
 | `mitigate` | si può disattivare ciò che la rende sfruttabile (es. bloccare un modulo del kernel) |
-| `remove` | il pacchetto è inutilizzato da più scansioni e toglierlo non trascina via altro |
-| `update` | la CVE si applica, oppure c'è un dubbio |
+| `remove` | il pacchetto è inutilizzato da giorni, nessun servizio ne ha bisogno e toglierlo non trascina via altro |
 | `skip` | il nodo non appartiene a nessun gruppo configurato: non viene toccato |
 
-Un LLM legge i dati pubblici della CVE e ne estrae le **condizioni** di sfruttabilità; il nodo le
-**verifica**. L'LLM non può dichiarare "siamo al sicuro" sulla parola, e nessun dato dei nodi gli
-viene inviato. La decisione finale è di OPA. Un controllore sempre acceso fa il giro dei nodi:
-controllo completo, poi un nodo alla volta (gruppi in ordine, canary per primo, master per
-ultimi, mai un nodo che modifica se stesso), rollback automatico, e da capo
-([ADR-0015](docs/adr/0015-controllore-in-loop.md)).
+Un LLM legge i **dati pubblici** della CVE e ne estrae le condizioni di sfruttabilità; il nodo le
+**verifica**. L'LLM non può dichiarare "siamo al sicuro" sulla parola e non riceve mai dati dei
+nodi. La decisione finale è di una policy OPA con garanzie fisse: nel dubbio si aggiorna, una CVE
+nel catalogo CISA KEV non è mai "non affetta".
+
+Un **controllore sempre acceso** fa il giro dei nodi: controllo completo, poi remediation un nodo
+alla volta (gruppi in ordine, canary per primo, master per ultimi, mai un nodo che modifica se
+stesso), rollback automatico in caso di errore, e da capo.
 
 ## Installazione
 
-Da un master del cluster (serve `kubectl` con permessi di amministratore), con un solo comando:
+Da un master del cluster, con `kubectl` da amministratore e agent SSH (`ssh -A`):
 
 ```bash
 curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage
 curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage && ./sage
+sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage
+./sage --live --allow-remove
 ```
 
-Un eseguibile unico, senza Python sul master: al primo avvio si installa come comando di
-sistema (`/usr/local/bin/sage`), poi da qualsiasi cartella basta `sage`
-([ADR-0016](docs/adr/0016-installer-eseguibile-unico.md)).
-Opzioni: `--live` (modalità reale: da subito su una nuova installazione, passaggio al vivo su
-una esistente), `--reinstall` (rifà l'installazione da zero, tenendo storico e cache dell'LLM),
-`--allow-remove` (rimozione dei pacchetti inutilizzati), `--dashboard` (apre la dashboard),
-`--resume` (giro in corso e log del lavoro attuale). Esempio: `sage --reinstall --live`.
+Un eseguibile unico, senza dipendenze sul master: fa le domande necessarie (nodi, utente SSH,
+gruppi, endpoint LLM), installa SAGE nel cluster e si installa come comando di sistema `sage`.
 
-L'installer occupa il terminale e fa una domanda per pagina: mostra i nodi e fa scegliere quali
-gestire, propone i gruppi dai dati di Kubernetes (modificabili in una vista a colonne), crea e
-installa la chiave SSH dedicata, configura l'LLM (qualsiasi endpoint compatibile OpenAI),
-installa il chart con Helm e lancia un primo giro in simulazione. Rilanciato, riconfigura, passa
-al vivo, spegne il controllore o disinstalla; ogni modifica finisce in uno storico con chi, quando e perché
-([ADR-0012](docs/adr/0012-storico-delle-modifiche.md)).
-Lo stato si guarda dalla dashboard di sola lettura (installer, *Apri la dashboard*): allarmi,
-sicurezza di ogni nodo, giro in corso, CVE gravi con la scadenza, CVE per urgenza
-([ADR-0014](docs/adr/0014-dashboard-sola-lettura.md)).
-Funziona con nodi della famiglia RHEL (la remediation usa dnf). Dettagli:
-[ADR-0011](docs/adr/0011-installer-interattivo.md); passi completi nella
-[guida al test](docs/test-gemello.md).
+| Opzione | Effetto |
+|---|---|
+| `--live` | modalità reale da subito (senza: simulazione, nessuna modifica ai nodi) |
+| `--allow-remove` | permette la rimozione dei pacchetti inutilizzati |
+| `--reinstall` | rifà l'installazione da zero, tenendo storico e cache dell'LLM |
+| `--resume` | segue il giro: stato e log di ogni nodo, uno dopo l'altro, fino a Ctrl+C |
+| `--dashboard` | apre la dashboard di sola lettura |
 
-## Stato
+Requisiti, passi dell'installer, uso quotidiano e cosa fare quando qualcosa va storto:
+**[guida operativa](docs/guida.md)**.
 
-Prima versione completa: raccolta, analisi, decisione, report e VEX, controllore con remediation nodo per nodo,
-installer. In test sul gemello. Roadmap in [docs/roadmap.md](docs/roadmap.md).
+## Documentazione
+
+- [Guida operativa](docs/guida.md): installazione, produzione, dashboard, problemi
+- [Architettura](docs/architecture.md): flusso, ruolo dell'LLM, gruppi, alta affidabilità
+- [Decisioni di progetto (ADR)](docs/adr)
+- [Runbook](docs/runbook.md): interventi a mano ed emergenze
+- [Roadmap](docs/roadmap.md)
+- [Configurazione d'esempio](examples/config.example.yaml)
 
 ## Principi
 
-- **Niente hardcoding.** Gruppi, utente SSH, endpoint LLM, pacchetti e moduli protetti, finestre
-  arrivano dalla configurazione ([esempio](examples/config.example.yaml)). I campi obbligatori
-  mancanti fanno fallire l'avvio con un errore chiaro.
 - **Nel dubbio si aggiorna.** È una garanzia della policy, non un parametro.
-- **Un nodo alla volta, per gruppi.** Canary per gruppo, master per ultimi, kernel nelle finestre.
-- **SAGE non dipende da ciò che patcha.** L'LLM è una catena di endpoint con riserve; senza LLM
-  SAGE usa solo regole deterministiche.
-- **Solo componenti gratuiti e open source**, versioni pinnate per hash, SHA o digest.
-
-Architettura: [docs/architecture.md](docs/architecture.md). Decisioni: [docs/adr](docs/adr).
+- **Niente hardcoding.** Gruppi, utente SSH, endpoint LLM, pacchetti e moduli protetti arrivano
+  dalla configurazione; i campi obbligatori mancanti fanno fallire l'avvio con un errore chiaro.
+- **Un nodo alla volta, mai su se stesso.** Ogni remediation gira su un altro nodo; un errore
+  ferma tutto finché una persona non controlla.
+- **SAGE non dipende da ciò che aggiorna.** L'LLM è una catena di endpoint con riserve; senza
+  LLM restano le regole deterministiche.
+- **Tracciabilità.** Ogni decisione ha la sua prova, ogni modifica di configurazione finisce in
+  uno storico con chi, quando e perché.
+- **Solo componenti gratuiti e open source**, con versioni fissate per hash, SHA o digest.
 
 ## Struttura
 
 ```
-src/sage/        codice Python (comando `sage`: scan, remediate, resume, check-config)
-ansible/         collect.yml e remediate.yml (usati da SAGE e a mano in emergenza)
-policy/          regole OPA (Rego) e relativi test
-chart/sage/      chart Helm: controllore, modelli dei Job di controllo e remediation, dashboard, RBAC
-installer/       installer interattivo (un file, Python 3.9 senza dipendenze)
+src/sage/        SAGE nel cluster: controllo, analisi, controllore, remediation, dashboard
+ansible/         raccolta dai nodi e remediation (usati da SAGE e a mano in emergenza)
+policy/          policy OPA (Rego) con i test
+chart/sage/      chart Helm
+installer/       installer (Python 3.9, sola libreria standard; compilato in un eseguibile)
 ci/              script della CI e della release (i workflow li chiamano e basta)
 examples/        configurazione e valori d'esempio
-docs/            architettura, ADR, roadmap, runbook, guida al test
-tests/           test Python con dati sintetici
+docs/            guida, architettura, ADR, runbook, roadmap
+tests/           test con dati sintetici
 ```
 
 ## Sviluppo
 
 ```bash
 uv sync
-uv run pytest                      # con `opa` nel PATH (o SAGE_OPA_BIN) girano anche i test d'integrazione
+SAGE_OPA_BIN=$(which opa) uv run pytest
 uv run ruff check . && uv run ruff format --check .
 opa test policy -v
 uv run sage check-config --config examples/config.example.yaml
+uv run --no-project --python 3.9 python -m unittest tests.test_installer
 ```
 
-`ansible/files/collect_node.py` gira **sui nodi** e `installer/sage_install.py` **sui master**,
-con il Python di sistema (3.9 su Rocky 9): solo libreria standard. I test dell'installer girano
-anche con 3.9: `uv run --no-project --python 3.9 python -m unittest tests.test_installer`.
+Il collector (`ansible/files/collect_node.py`) gira sui nodi e l'installer sui master con il
+Python di sistema: solo libreria standard, compatibili con Python 3.9.
 
-Release: con la CI verde, un tag `vX.Y.Z` (da `git push` o dalla pagina *Releases* di GitHub).
-La versione viene dal tag: non serve aggiornarla nei file prima.
+**Release**: con la CI verde, un tag `vX.Y.Z` (da `git push` o dalla pagina *Releases* di
+GitHub). La versione viene dal tag. La CI pubblica l'immagine per digest, compila l'installer in
+un eseguibile con chart, immagine e checksum già fissati, e allega `sage`, `sage-install.py`
+(altre architetture), il chart e `SHA256SUMS`. L'immagine su GHCR va resa pubblica una volta
+(*Packages → sage → Package settings*), oppure l'installer crea un pull secret.
 
 ## Licenza
 
-Da definire con CINECA.
+Da definire.

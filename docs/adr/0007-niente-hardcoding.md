@@ -4,7 +4,7 @@ Stato: accettata (2026-10-21)
 
 ## Contesto
 
-SAGE nasce su un gemello digitale ma deve poter girare in produzione e su altri cluster.
+SAGE nasce su un cluster di prova ma deve poter girare in produzione e su qualsiasi cluster.
 
 ## Decisione
 

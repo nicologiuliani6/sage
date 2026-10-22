@@ -104,8 +104,8 @@
             sage_applied: true
 
         # upgrade, non upgrade-minimal: con molte advisory insieme la versione "minima" di
-        # una può essere incompatibile con quella richiesta da un'altra (visto sul gemello:
-        # python3 e python-unversioned-command). Si portano i pacchetti delle advisory alla
+        # una può essere incompatibile con quella richiesta da un'altra (es. python3 e
+        # python-unversioned-command su Rocky 9). Si portano i pacchetti delle advisory alla
         # versione più recente, che è coerente e contiene tutte le correzioni.
         - name: Applica le advisory di sicurezza
           ansible.builtin.command:
