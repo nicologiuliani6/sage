@@ -994,6 +994,13 @@ class EndToEnd(unittest.TestCase):
         logs = [c for c in self.read_state()["calls"] if "logs" in c]
         self.assertIn("job/sage-fix-w2-1", logs[-1])
 
+        # Lancia un giro con un giro già in corso: niente attesa, si segue il lavoro attuale.
+        code, _ = self.run_installer(["5"])  # menu: lancia un giro adesso
+        self.assertEqual(code, 0)
+        state = self.read_state()
+        self.assertIn("sage-scan-now", state["flags"])
+        self.assertIn("job/sage-fix-w2-1", [c for c in state["calls"] if "logs" in c][-1])
+
         # --dashboard: dritto al port-forward, senza menu.
         code, _ = self.run_installer([], args=("--dashboard",))
         self.assertEqual(code, 0)
@@ -1090,3 +1097,57 @@ class Progress(unittest.TestCase):
         self.assertIsNone(job)
         self.assertIn("  w1: niente da fare", lines)
         self.assertIn("Prossimo giro: T", lines)
+
+
+class Command(unittest.TestCase):
+    """L'eseguibile compilato si installa come comando di sistema `sage`."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.me = self.tmp / "scaricato"
+        self.me.write_bytes(b"eseguibile v2")
+        self.target = self.tmp / "bin-sage"
+
+    def installer(self, answers=("",)):
+        args = inst.parse_args(["--no-tui", "--bin", str(self.target)])
+        ui = inst.LineUI(False)
+        installer = inst.Installer(args, ui)
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        calls = []
+
+        def fake_run(cmd, check=True, **kw):
+            calls.append(cmd)
+            if cmd[-4:-2] == ["0755", str(self.me)] or "install" in cmd:
+                self.target.write_bytes(self.me.read_bytes())
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        answers = list(answers)
+        with (
+            mock.patch.object(inst.sys, "frozen", True, create=True),
+            mock.patch.object(inst.sys, "executable", str(self.me)),
+            mock.patch.object(inst, "run", fake_run),
+            mock.patch("builtins.input", lambda prompt="": answers.pop(0)),
+            mock.patch("builtins.print"),
+        ):
+            installer.install_command()
+        return calls
+
+    def test_installs_then_skips_identical_then_updates(self):
+        calls = self.installer()
+        self.assertEqual(calls[0][-4:], ["-m", "0755", str(self.me), str(self.target)])
+        self.assertEqual(self.target.read_bytes(), b"eseguibile v2")
+        self.assertEqual(self.installer(answers=()), [])  # già uguale: nessuna domanda
+        self.me.write_bytes(b"eseguibile v3")
+        self.assertEqual(len(self.installer()), 1)  # versione nuova: aggiorna
+
+    def test_declined(self):
+        self.assertEqual(self.installer(answers=("n",)), [])
+        self.assertFalse(self.target.exists())
+
+    def test_script_mode_never_installs(self):
+        args = inst.parse_args(["--no-tui", "--bin", str(self.target)])
+        installer = inst.Installer(args, inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        installer.install_command()  # niente sys.frozen: nessuna domanda, nessun comando
+        self.assertFalse(self.target.exists())

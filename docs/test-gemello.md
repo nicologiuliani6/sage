@@ -15,7 +15,7 @@ Ogni remediation gira in un Job su un altro nodo: un nodo non modifica mai se st
    settings → Change visibility → Public*. In alternativa l'installer crea un pull secret.
 3. Release: con la CI verde, dalla pagina *Releases → Draft a new release* con un tag nuovo
    `vX.Y.Z` (o `git tag vX.Y.Z && git push origin vX.Y.Z`). La versione viene dal tag. Il
-   workflow `publish` allega alla release l'eseguibile `sage-install`, `sage-install.py`, il chart e
+   workflow `publish` allega alla release l'eseguibile `sage`, `sage-install.py`, il chart e
    `SHA256SUMS`.
 4. Un endpoint LLM compatibile OpenAI con la sua chiave API (sul gemello si usa Groq:
    `https://api.groq.com/openai/v1`). Si può anche partire senza LLM: SAGE usa solo le regole
@@ -28,13 +28,15 @@ installare quella di SAGE sugli altri nodi:
 
 ```bash
 ssh -A <utente>@<IP del master>
-curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage-install
+curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage
 curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage-install
-./sage-install
+sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage
+./sage
 ```
 
-Se `/tmp` è montata `noexec` (baseline CIS): `TMPDIR=~/.cache ./sage-install`.
+Al primo avvio chiede di installarsi come comando di sistema (`/usr/local/bin/sage`): da lì in
+poi basta `sage`, e il file scaricato si può cancellare. Se `/tmp` è montata `noexec` (baseline
+CIS): `TMPDIR=~/.cache sage`.
 Opzioni: `--live` per partire subito in modalità reale, `--allow-remove` per permettere la
 rimozione dei pacchetti inutilizzati, `--dashboard` per aprire la dashboard, `--resume` per
 vedere il giro in corso e seguire il log del lavoro attuale.
@@ -102,7 +104,7 @@ Cosa aspettarsi al primo giro:
 
 ## 3. Qualche giorno in simulazione
 
-Rilancia `./sage-install` quando vuoi cambiare qualcosa: parte dalla configurazione
+Rilancia `sage` quando vuoi cambiare qualcosa: parte dalla configurazione
 attuale. Da provare:
 - *Riconfigura → Modifica un gruppo*: attiva rimozioni e mitigazioni sul gruppo worker e guarda
   cosa proporrebbe.
