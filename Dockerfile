@@ -34,10 +34,10 @@ ENV PATH="/opt/sage/.venv/bin:${PATH}" \
     HOME=/tmp
 
 COPY ansible ./ansible
-# /tmp/ansible creata qui da root resterebbe non scrivibile per l'utente 10001 (nel cluster
+# Quello che ansible-galaxy lascia in /tmp (HOME) è di root e non scrivibile per l'utente 10001 (nel cluster
 # /tmp è un emptyDir, ma l'immagine deve funzionare anche da sola).
 RUN ansible-galaxy collection install -r ansible/requirements.yml -p /usr/share/ansible/collections \
- && rm -rf /tmp/ansible
+ && find /tmp -mindepth 1 -delete
 
 COPY policy ./policy
 
