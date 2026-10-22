@@ -4,7 +4,13 @@
 # Dentro il cluster questo file arriva dal chart Helm (values → ConfigMap):
 # vedi examples/values.example.yaml.
 
-timezone: Europe/Rome                    # fuso orario delle finestre di manutenzione
+timezone: Europe/Rome                    # fuso degli orari nel report e nei log
+
+# Il controllore gira in loop: controllo completo, remediation un nodo alla volta (gruppi
+# in ordine, canary per primo), pausa, di nuovo da capo.
+controller:
+  pause_minutes: 30                      # pausa tra un giro e il successivo (0 = subito)
+  poll_seconds: 30                       # ogni quanto guarda lo stato dei Job
 
 # Dettaglio del log: info (fasi, avanzamento, una riga per chiamata LLM) o debug.
 log_level: info
@@ -41,10 +47,8 @@ groups:                                  # i nodi fuori da ogni gruppo non vengo
   - name: worker
     selector: sage.io/group=worker       # label selector Kubernetes
     order: 1                             # ordine delle ondate
-    canary: NOME_NODO_CANARY
-    canary_soak_minutes: 360             # osservazione del canary prima degli altri
-    concurrency: 1
-    kernel: auto                         # auto | window | manual
+    canary: NOME_NODO_CANARY             # primo nodo del gruppo nel giro
+    kernel: auto                         # auto (nel giro, come il resto) | manual
     drain: evict                         # evict | wait-empty
     allow_remove: true                   # rimuovere pacchetti inutilizzati
     allow_mitigate: true                 # bloccare moduli del kernel
@@ -58,19 +62,18 @@ groups:                                  # i nodi fuori da ogni gruppo non vengo
   - name: gpu-llm
     selector: sage.io/group=gpu-llm
     order: 3
-    kernel: window
-    window: "sat 02:00-06:00"
+    kernel: auto
     requires_fallback: true              # si tocca solo con una riserva LLM attiva
     health_urls:
       - http://vllm.llm.svc:8000/health
   - name: master
     selector: node-role.kubernetes.io/control-plane
     order: 4
-    kernel: window
-    window: "sat 02:00-06:00"
+    kernel: auto
 
 policy:
   idle_scans_required: 3                 # scansioni consecutive "inutilizzato" prima di agire
+  urgent_deadline_hours: 6               # CVE gravi (KEV, sfruttate): da sistemare entro queste ore
   protected_packages:                    # mai rimossi
     - "kernel*"
     - glibc

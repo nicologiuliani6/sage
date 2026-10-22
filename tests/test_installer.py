@@ -98,11 +98,10 @@ class NodesAndGroups(unittest.TestCase):
         groups, assignment = inst.propose_groups(nodes)
         self.assertEqual(
             [(g.name, g.order, g.kernel) for g in groups],
-            [("worker", 1, "auto"), ("gpu", 2, "manual"), ("master", 3, "window")],
+            [("worker", 1, "auto"), ("gpu", 2, "manual"), ("master", 3, "auto")],
         )
         self.assertEqual(groups[0].canary, "w1")  # canary solo se il gruppo ha più nodi
         self.assertIsNone(groups[1].canary)
-        self.assertEqual(groups[2].window, inst.DEFAULT_WINDOW)
         self.assertEqual(assignment, {"w1": "worker", "w2": "worker", "g1": "gpu", "cp1": "master"})
 
     def test_normalize_drops_empty_groups_and_stale_canary(self):
@@ -133,6 +132,20 @@ class NodesAndGroups(unittest.TestCase):
         self.assertEqual(cfg["health_urls"], ["http://h/health"])
         self.assertNotIn("window", cfg)
 
+    def test_old_window_and_concurrency_are_dropped(self):
+        raw = {
+            "name": "master",
+            "order": 2,
+            "kernel": "window",
+            "window": "sat 02:00-06:00",
+            "concurrency": 2,
+            "canary_soak_minutes": 360,
+        }
+        cfg = inst.Group.from_config(raw).to_config()
+        self.assertEqual(cfg["kernel"], "auto")
+        for key in ("window", "concurrency", "canary_soak_minutes"):
+            self.assertNotIn(key, cfg)
+
 
 class Values(unittest.TestCase):
     def make(self, base=None, **kw):
@@ -141,7 +154,7 @@ class Values(unittest.TestCase):
             release="sage",
             image=IMAGE,
             pull_secret=None,
-            schedule="0 */6 * * *",
+            pause_minutes=30,
             timezone="Europe/Rome",
             suspend=False,
             ssh_user="admin",
@@ -167,6 +180,13 @@ class Values(unittest.TestCase):
             ["sage.io/group=worker", "sage.io/group=gpu", "sage.io/group=master"],
         )
         self.assertIn("glibc", v["config"]["policy"]["protected_packages"])
+
+    def test_old_cronjob_values_are_removed(self):
+        v = self.make({"schedule": "0 */6 * * *", "timeZone": "Europe/Rome"}, pause_minutes=0)
+        self.assertNotIn("schedule", v)
+        self.assertNotIn("timeZone", v)
+        self.assertEqual(v["config"]["controller"], {"pause_minutes": 0})
+        self.assertEqual(v["config"]["timezone"], "Europe/Rome")
 
     def test_existing_values_are_kept(self):
         base = {
@@ -547,8 +567,8 @@ class Misc(unittest.TestCase):
             value, "localhost,127.0.0.1,.svc,.cluster.local,10.96.0.1,192.0.2.1,192.0.2.2"
         )
         self.assertEqual(inst.env_name("vllm-gpu"), "VLLM_GPU_API_KEY")
-        self.assertTrue(inst.WINDOW_RE.match("sat,sun 01:00-05:00"))
-        self.assertFalse(inst.WINDOW_RE.match("sabato 01:00-05:00"))
+        self.assertEqual(inst.parse_k8s_time("1970-01-01T00:01:00Z"), 60.0)
+        self.assertEqual(inst.parse_k8s_time(None), 0.0)
         self.assertEqual(
             inst.parse_www_authenticate('Bearer realm="https://a/t",scope="s"'),
             {"realm": "https://a/t", "scope": "s"},
@@ -591,11 +611,8 @@ class Interactive(unittest.TestCase):
             "3",
             "1",  # modifica il gruppo worker...
             "4",
-            "2",
-            "sun 01:00-03:00",  # ...kernel nella finestra
-            "5",
-            "2",  # ...due nodi alla volta
-            "6",  # ...rimozioni attive
+            "2",  # ...kernel solo a mano
+            "5",  # ...rimozioni attive
             "1",  # fatto
             "1",  # i gruppi vanno bene
         ]
@@ -603,9 +620,7 @@ class Interactive(unittest.TestCase):
         by = {g.name: g for g in result}
         self.assertNotIn("master", by)  # rimasto vuoto: tolto
         self.assertEqual(assignment["cp1"], "gpu")
-        self.assertEqual(by["worker"].kernel, "window")
-        self.assertEqual(by["worker"].window, "sun 01:00-03:00")
-        self.assertEqual(by["worker"].concurrency, 2)
+        self.assertEqual(by["worker"].kernel, "manual")
         self.assertTrue(by["worker"].allow_remove)
 
     def llm(self, answers, secrets, models, groups=()):
@@ -671,21 +686,16 @@ class Interactive(unittest.TestCase):
         llm, _ = self.answer(["3"], lambda: self.installer.configure_llm(current, []))
         self.assertEqual(llm, {"endpoints": []})
 
-    def test_schedule(self):
-        choose = self.installer.choose_schedule
-        self.assertEqual(
-            self.answer(["4", "15 2 * * *"], lambda: choose(None, False)), ("15 2 * * *", False)
-        )
-        # Espressione non standard: proposta come "come ora".
-        self.assertEqual(
-            self.answer([""], lambda: choose("15 2 * * *", False)), ("15 2 * * *", False)
-        )
-        # Giri sospesi: la scelta predefinita è "mai", e la frequenza resta per dopo.
-        self.assertEqual(self.answer([""], lambda: choose("0 3 * * *", True)), ("0 3 * * *", True))
-        self.assertEqual(self.answer(["5"], lambda: choose(None, False)), ("0 */6 * * *", True))
-        self.assertEqual(
-            self.answer(["2"], lambda: choose("0 3 * * *", True)), ("0 */12 * * *", False)
-        )
+    def test_pause(self):
+        choose = self.installer.choose_pause
+        self.assertEqual(self.answer([""], lambda: choose(None, False)), (30, False))
+        self.assertEqual(self.answer(["2"], lambda: choose(None, False)), (0, False))
+        self.assertEqual(self.answer(["5", "45"], lambda: choose(None, False)), (45, False))
+        # Valore non tra quelli proposti: offerto come "come ora".
+        self.assertEqual(self.answer([""], lambda: choose(45, False)), (45, False))
+        # Controllore spento: la scelta predefinita è "spento", la pausa resta per dopo.
+        self.assertEqual(self.answer([""], lambda: choose(120, True)), (120, True))
+        self.assertEqual(self.answer(["1"], lambda: choose(120, True)), (30, False))
 
 
 # ------------------------------------------------------------------ prova completa
@@ -774,7 +784,7 @@ class EndToEnd(unittest.TestCase):
                 "2",  # w3 non accetta le credenziali: escludilo
                 "",  # gruppi: vanno bene
                 "2",  # nessun LLM
-                "",  # ogni 6 ore
+                "",  # pausa di 30 minuti tra un giro e l'altro
                 "Europe/Rome",
                 "",  # nessun proxy
                 "",  # procedo
@@ -789,7 +799,8 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(values["suspend"])
         self.assertEqual(values["image"]["digest"], DIGEST)
         self.assertEqual(values["config"]["ssh"]["user"], "admin")
-        self.assertEqual(values["timeZone"], "Europe/Rome")
+        self.assertEqual(values["config"]["timezone"], "Europe/Rome")
+        self.assertEqual(values["config"]["controller"], {"pause_minutes": 30})
         self.assertEqual([g["name"] for g in values["config"]["groups"]], ["worker", "master"])
         self.assertIn("fake-admin", state["helm"]["description"])
         labels = {n: lab.get("sage.io/group") for n, lab in state["labels"].items()}
@@ -799,11 +810,15 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(
             state["namespace"]["metadata"]["labels"]["app.kubernetes.io/managed-by"], "sage-install"
         )
-        self.assertEqual(len(state["jobs"]), 1)
+        # Controllore acceso: il giro si chiede con il segnale, e il controllore lo avvia.
+        self.assertEqual(state["flags"], ["sage-scan-now"])
+        self.assertEqual(len(state["scan_jobs"]), 1)
         keys = (self.tmp / "homes" / "192.0.2.11" / ".ssh" / "authorized_keys").read_text()
         self.assertIn("sage@sage", keys)
         install, manual = self.history()
-        self.assertEqual((install["action"], manual["action"]), ("installazione", "giro manuale"))
+        self.assertEqual(
+            (install["action"], manual["action"]), ("installazione", "giro richiesto a mano")
+        )
         self.assertEqual(install["kube_user"], "fake-admin")
         self.assertEqual(install["note"], "test sul gemello")
         self.assertEqual(install["helm_revision"], "1")
@@ -822,7 +837,7 @@ class EndToEnd(unittest.TestCase):
                 "1",  # fatto
                 "",  # gruppi: vanno bene
                 "2",  # nessun LLM
-                "",  # frequenza
+                "",  # pausa
                 "",  # fuso
                 "",  # proxy
                 "",  # procedo
@@ -908,7 +923,7 @@ class EndToEnd(unittest.TestCase):
             actions,
             [
                 "installazione",
-                "giro manuale",
+                "giro richiesto a mano",
                 "riconfigurazione",
                 "passaggio al vivo",
                 "servizi aggiuntivi dei nodi",

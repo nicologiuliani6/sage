@@ -26,7 +26,16 @@ def test_example_config_is_valid():
 def test_minimal_config_runs_in_safe_mode():
     cfg = config.parse(minimal())
     assert cfg.llm.safe_mode_only
-    assert cfg.groups[0].concurrency == 1
+    assert cfg.groups[0].kernel == "auto"
+    assert cfg.controller.pause_minutes == 30 and cfg.policy.urgent_deadline_hours == 6
+
+
+def test_old_window_config_becomes_auto():
+    """Le configurazioni con la finestra di manutenzione (rimossa) restano valide."""
+    old = minimal(
+        groups=[{"name": "m", "selector": "s", "order": 1, "kernel": "window", "window": "x"}]
+    )
+    assert config.parse(old).groups[0].kernel == "auto"
 
 
 @pytest.mark.parametrize(
@@ -40,21 +49,9 @@ def test_minimal_config_runs_in_safe_mode():
             minimal(groups=[{"name": "w", "selector": "s", "order": 1, "kernel": "sometimes"}]),
             "kernel",
         ),
-        (minimal(groups=[{"name": "w", "selector": "s", "order": 1}]), "window"),
-        (
-            minimal(
-                groups=[
-                    {
-                        "name": "w",
-                        "selector": "s",
-                        "order": 1,
-                        "kernel": "window",
-                        "window": "saturday night",
-                    }
-                ]
-            ),
-            "window",
-        ),
+        (minimal(controller={"pause_minutes": -1}), "controller.pause_minutes"),
+        (minimal(controller={"poll_seconds": 1}), "controller.poll_seconds"),
+        (minimal(controller="spesso"), "controller"),
         (
             minimal(
                 groups=[

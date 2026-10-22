@@ -7,7 +7,7 @@ import json
 import yaml
 
 from sage import cli, collect, kube, sources
-from sage.kube import JobInfo, Node
+from sage.kube import Node
 from tests.conftest import advisory, needs_opa, package, report
 
 CONFIG = {
@@ -117,28 +117,20 @@ def test_scan_dry_run_writes_report_and_creates_nothing(monkeypatch, tmp_path, c
 
 
 @needs_opa
-def test_scan_live_starts_canary_then_resume_flag(monkeypatch, tmp_path, capsys):
+def test_scan_never_touches_nodes_and_tracks_urgent(monkeypatch, tmp_path, capsys):
+    """Il controllo non avvia remediation (lo fa il controllore) e segna le CVE gravi."""
     cluster, cfg = setup(monkeypatch, tmp_path)
     assert cli.main(["scan", "--config", cfg]) == 0
-    assert len(cluster.created) == 1
-    job = cluster.created[0]
-    assert job["metadata"]["annotations"]["sage.io/node-name"] == "w1"
-    args = job["spec"]["template"]["spec"]["containers"][0]["args"]
-    plan = json.loads(base64.b64decode(args[args.index("--plan") + 1]))
-    assert plan["update_advisories"] == ["RLSA-1"] and plan["remove_packages"] == ["cockpit-ws"]
-
-    # Il Job fallisce: al giro dopo tutto si ferma.
-    name = job["metadata"]["name"]
-    cluster.jobs = [JobInfo(name, "w1", False, False, True, None)]
-    cluster.created.clear()
+    assert cluster.created == []
+    rep = cluster.store["sage-report"]
+    assert rep["plans"]["w1"]["update_advisories"] == ["RLSA-1"]
+    state = cluster.store["sage-state"]
+    # openssl ha una CVE in KEV: priorità act, da sistemare entro la scadenza.
+    first = state["urgent"]["w1|openssl"]
+    assert state["last_scan"] and set(state["urgent"]) == {"w1|openssl", "w2|openssl"}
+    # Al controllo successivo la data di scoperta resta quella di prima.
     assert cli.main(["scan", "--config", cfg]) == 0
-    assert "FERMO" in capsys.readouterr().out and cluster.created == []
-
-    # Una persona controlla il nodo e crea la ConfigMap di sblocco.
-    cluster.flags.add("sage-resume")
-    assert cli.main(["scan", "--config", cfg]) == 0
-    assert "sbloccate" in capsys.readouterr().out
-    assert "sage-resume" not in cluster.flags
+    assert cluster.store["sage-state"]["urgent"]["w1|openssl"] == first
 
 
 def test_state_roundtrip_is_compact():

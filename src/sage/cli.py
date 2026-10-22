@@ -36,19 +36,35 @@ def cmd_check_config(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
+    """Controllo completo: raccolta, analisi, decisioni, report. Nessuna modifica ai nodi:
+    le remediation le avvia il controllore (`sage controller`)."""
+    from sage.kube import Kube
+
+    cfg = config.load(args.config)
+    set_log_level(cfg)
+    return full_scan(cfg, Kube(), _release(), args.dry_run)
+
+
+def track_urgent(analysis, previous: dict, now: datetime) -> dict:
+    """Quando è stata trovata ogni CVE grave ancora da sistemare: 'nodo|pacchetto' -> ora."""
+    current = {}
+    for node, decisions in analysis.decisions.items():
+        for d in decisions:
+            if d.priority == "act" and d.action in ("update", "remove", "mitigate"):
+                key = f"{node}|{d.package}"
+                current[key] = previous.get(key) or now.isoformat()
+    return current
+
+
+def full_scan(cfg: config.Config, kube, release: str, dry_run: bool) -> int:
     from sage import act, opa, paths, report, sources
     from sage.analyze import Analyzer
     from sage.collect import collect
     from sage.inventory import assign_groups
-    from sage.kube import Kube
     from sage.llm import LlmChain
 
-    cfg = config.load(args.config)
-    set_log_level(cfg)
-    kube = Kube()
-    release = _release()
     now = datetime.now(ZoneInfo(cfg.timezone))
-    log.info("giro %s (%s)", "in simulazione" if args.dry_run else "REALE", cfg.timezone)
+    log.info("giro %s (%s)", "in simulazione" if dry_run else "REALE", cfg.timezone)
 
     nodes = kube.list_nodes()
     groups, warnings = assign_groups(nodes, cfg.groups)
@@ -63,6 +79,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     ]
 
     state = kube.read_json(f"{release}-state") or {}
+    state["last_scan"] = now.isoformat()
     cache = kube.read_json(f"{release}-llm-cache") or {}
     kev = sources.fetch_kev(cfg.sources)
     all_cves = sorted(
@@ -90,26 +107,32 @@ def cmd_scan(args: argparse.Namespace) -> int:
     )
     analysis = analyzer.run(reports, groups, state.get("idle", {}), cache, kev, epss)
     state["idle"] = analysis.idle
+    # Le CVE gravi dei nodi non raggiunti restano con la loro data di scoperta.
+    previous = state.get("urgent", {})
+    state["urgent"] = {
+        **{k: v for k, v in previous.items() if k.split("|", 1)[0] not in reports},
+        **track_urgent(analysis, previous, now),
+    }
     kube.write_json(f"{release}-llm-cache", analysis.cache)
+    if state["urgent"]:
+        log.info(
+            "CVE gravi da sistemare entro %d ore: %d pacchetti",
+            cfg.policy.urgent_deadline_hours,
+            len(state["urgent"]),
+        )
 
     log.info("analisi completata, chiamate LLM: %d", chain.calls)
-    plans = act.build_plans(analysis.decisions, groups, now)
-    resumed = []
-    if kube.pop_flag(f"{release}-resume") and state.get("halted"):
-        resumed = [f"ondate sbloccate su richiesta (era: {state.get('halt_reason')})"]
-        act.resume(state)
-    messages = resumed + act.step(
-        cfg, kube, chain, release, nodes, groups, plans, state, now, args.dry_run
-    )
+    plans = act.build_plans(analysis.decisions, groups)
+    messages: list[str] = []
     kube.write_json(f"{release}-state", state)
 
     plan_dicts = {n: p.to_dict() for n, p in plans.items()}
-    data = report.to_json(analysis, plan_dicts, messages, warnings, now, args.dry_run)
+    data = report.to_json(analysis, plan_dicts, messages, warnings, now, dry_run)
     data["vex"] = report.openvex(analysis, reports, now)
     data["profiles"] = {node: r.get("profile") for node, r in reports.items()}
     kube.write_json(f"{release}-report", data)
     log.info("report salvato in %s-report", release)
-    print(report.summary(analysis, groups, plan_dicts, messages, warnings, args.dry_run, reports))
+    print(report.summary(analysis, groups, plan_dicts, messages, warnings, dry_run, reports))
     return 0
 
 
@@ -124,19 +147,20 @@ def cmd_remediate(args: argparse.Namespace) -> int:
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    from sage import act
     from sage.kube import Kube
 
-    kube = Kube()
-    name = f"{_release()}-state"
-    state = kube.read_json(name) or {}
-    if not state.get("halted"):
-        print("SAGE non è fermo: niente da sbloccare")
-        return 0
-    reason = state.get("halt_reason")
-    failed = act.resume(state)
-    kube.write_json(name, state)
-    print(f"sbloccato (era: {reason}); nodi riportati in attesa: {', '.join(failed) or 'nessuno'}")
+    Kube().set_flag(f"{_release()}-resume")
+    print("richiesta inviata: il controllore riprende al prossimo passo")
+    return 0
+
+
+def cmd_controller(args: argparse.Namespace) -> int:
+    from sage import controller
+    from sage.kube import Kube
+
+    cfg = config.load(args.config)
+    set_log_level(cfg)
+    controller.run(controller.Controller(cfg, Kube(), _release(), args.dry_run))
     return 0
 
 
@@ -158,7 +182,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("check-config", help="valida un file di configurazione")
     p.add_argument("--config", required=True)
 
-    p = sub.add_parser("scan", help="raccoglie, analizza, decide e fa avanzare le ondate")
+    p = sub.add_parser("scan", help="controllo completo: raccoglie, analizza, decide, report")
+    p.add_argument("--config", required=True)
+    p.add_argument("--dry-run", action="store_true", help="nessuna modifica ai nodi")
+
+    p = sub.add_parser(
+        "controller", help="loop sempre acceso: controllo, remediation nodo per nodo, pausa"
+    )
     p.add_argument("--config", required=True)
     p.add_argument("--dry-run", action="store_true", help="nessuna modifica ai nodi")
 
@@ -167,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--node", required=True)
     p.add_argument("--plan", required=True, help="piano in JSON codificato base64")
 
-    sub.add_parser("resume", help="sblocca le ondate dopo un errore controllato a mano")
+    sub.add_parser("resume", help="riprende dopo un errore, una volta controllato il nodo")
 
     p = sub.add_parser("dashboard", help="dashboard web di sola lettura")
     p.add_argument("--config", required=True)
@@ -188,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "check-config": cmd_check_config,
         "scan": cmd_scan,
+        "controller": cmd_controller,
         "remediate": cmd_remediate,
         "resume": cmd_resume,
         "dashboard": cmd_dashboard,

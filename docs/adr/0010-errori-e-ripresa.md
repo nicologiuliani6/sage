@@ -1,4 +1,4 @@
-# ADR-0010: Un errore ferma le ondate, una persona le riprende
+# ADR-0010: Un errore ferma tutto, una persona riprende
 
 Stato: accettata (2026-10-21)
 
@@ -12,9 +12,11 @@ torna Ready dopo il riavvio. Ripetere automaticamente può peggiorare la situazi
 - Il Job di remediation non ha nuovi tentativi (`backoffLimit: 0`).
 - Il playbook fa rollback della transazione dnf e dei blocchi dei moduli; se nulla era stato
   modificato rimette il nodo in servizio, altrimenti lo lascia in cordon.
-- Un Job fallito, scaduto o scomparso ferma tutte le ondate (`halted` nello stato).
+- Un Job fallito, scaduto o scomparso ferma il controllore: nessun altro nodo viene toccato
+  (`halted` nello stato, ADR-0015).
 - Si riprende solo con un'azione esplicita: la ConfigMap `<release>-resume` (letta e cancellata dal
-  giro successivo) o il comando `sage resume`. Il nodo fallito viene ritentato.
+  controllore al passo successivo) o il comando `sage resume`, che la crea. Il giro continua dal
+  nodo dopo; quello fallito viene ritentato al giro successivo.
 
 ## Conseguenze
 

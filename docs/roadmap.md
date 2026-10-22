@@ -7,8 +7,10 @@
 - [x] **M4** livello LLM: catena di endpoint, cache, schema, budget, solo dati pubblici
 - [x] **M4** verifica delle condizioni sul nodo (moduli, servizi, uso) con controlli di coerenza
 - [x] **M5** decisione OPA (fail closed, KEV, rimozione e mitigazione sicure), priorità, report, VEX
-- [x] **M6** remediation a ondate: Job per nodo, canary e osservazione, concorrenza, finestre,
-      riserva LLM, rollback, stop e `sage resume`
+- [x] **M6** remediation: Job per nodo, gruppi in ordine e canary, riserva LLM, rollback, stop e
+      ripresa
+- [x] Controllore sempre acceso che fa il giro dei nodi, con ripresa dopo un'interruzione e
+      scadenza per le CVE gravi ([ADR-0015](adr/0015-controllore-in-loop.md))
 - [x] Installer interattivo per qualsiasi cluster e release con la CI
       ([ADR-0011](adr/0011-installer-interattivo.md))
 - [x] Dashboard web di sola lettura ([ADR-0014](adr/0014-dashboard-sola-lettura.md))
@@ -39,4 +41,4 @@
 - [ ] Prompt di prova sull'LLM come controllo di salute del gruppo LLM (oggi: `health_urls`)
 - [ ] Integrazione con `certcc-ssvc` per l'albero SSVC completo
 - [ ] Installer: supporto ai nodi non RHEL (apt) quando la remediation lo avrà
-- [ ] Dashboard: azioni operative (sospendi, giro, sblocca) con login tramite token Kubernetes
+- [ ] Dashboard: azioni operative (spegni, giro, riprendi) con login tramite token Kubernetes

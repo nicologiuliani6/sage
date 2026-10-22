@@ -6,8 +6,7 @@ image:
   repository: ghcr.io/OWNER/sage
   digest: sha256:DIGEST_DAL_RIEPILOGO_DELLA_ACTION_IMAGE
 
-timeZone: Europe/Rome          # fuso del CronJob
-suspend: true                  # primo giro a mano: kubectl create job --from=cronjob/sage-scan
+suspend: false                 # true = controllore spento, nessun giro
 dryRun: true                   # simulazione finché le decisioni non convincono
 
 secrets:
@@ -20,6 +19,8 @@ secrets:
 
 config:
   timezone: Europe/Rome
+  controller:
+    pause_minutes: 30            # pausa tra un giro e il successivo (0 = subito)
   ssh:
     user: UTENTE_SSH
   llm:
@@ -40,8 +41,7 @@ config:
     - name: master
       selector: node-role.kubernetes.io/control-plane
       order: 2
-      kernel: window
-      window: "sat 02:00-06:00"
+      kernel: auto
   policy:
     protected_packages: ["kernel*", glibc, systemd, dnf, rpm, sudo, "openssh*", NetworkManager]
     protected_modules: ["nf_*", "ip_*", "ip6_*", br_netfilter, overlay, vxlan, veth, "xt_*"]

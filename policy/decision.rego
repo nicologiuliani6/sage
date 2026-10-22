@@ -48,9 +48,6 @@ default schedule := "auto"
 schedule := "manual" if {
 	is_kernel
 	input.group.kernel == "manual"
-} else := "window" if {
-	is_kernel
-	input.group.kernel == "window"
 }
 
 group_known if {

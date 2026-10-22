@@ -11,15 +11,14 @@ image:
 
 imagePullSecrets: []        # es. [{name: ghcr-pull}] se l'immagine è privata
 
-schedule: "0 */6 * * *"
-timeZone: ""                # fuso del CronJob, es. "Europe/Rome"; vuoto = fuso del controller
-suspend: true               # il CronJob nasce sospeso
+suspend: true               # true = controllore spento, nessun giro (nasce spento)
 dryRun: true                # nessuna modifica ai nodi finché non lo disattivi
-activeDeadlineSeconds: 10800
+activeDeadlineSeconds: 10800  # tempo massimo di un controllo completo
+scanTtlSecondsAfterFinished: 86400  # per quanto restano i Job di controllo finiti (e i loro log)
 
 remediate:
   activeDeadlineSeconds: 14400   # tempo massimo per un nodo (drain, aggiornamento, riavvio)
-  ttlSecondsAfterFinished: 259200  # deve superare l'intervallo dello scan: lo scan legge l'esito
+  ttlSecondsAfterFinished: 259200  # per quanto restano i Job finiti (e i loro log)
 
 secrets:
   ssh: sage-ssh             # Secret con le chiavi id_ed25519 e known_hosts
@@ -29,7 +28,10 @@ extraEnv: []                # es. [{name: HTTPS_PROXY, value: "http://proxy:3128
 
 # Diventa /etc/sage/config/config.yaml. Schema e commenti in examples/config.example.yaml.
 config:
-  timezone: UTC             # fuso delle finestre di manutenzione, es. Europe/Rome
+  timezone: UTC             # fuso degli orari nel report, es. Europe/Rome
+  controller:
+    pause_minutes: 30       # pausa tra un giro e il successivo (0 = subito)
+    poll_seconds: 30
   log_level: info           # info (fasi e avanzamento) o debug
   extra_services: {}        # nodo -> servizi o pacchetti fuori da Kubernetes da tenere
   ssh:

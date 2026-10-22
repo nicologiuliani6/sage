@@ -1,6 +1,6 @@
 # ADR-0003: CronJob come orchestratore
 
-Stato: accettata (2026-10-21)
+Stato: sostituita dall'[ADR-0015](0015-controllore-in-loop.md) (2026-10-22)
 
 ## Contesto
 

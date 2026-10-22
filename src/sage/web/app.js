@@ -6,6 +6,19 @@
 const LEVEL = { critical: "critico", warning: "attenzione", ok: "a posto", unknown: "sconosciuto", info: "info" };
 const ACTION = { update: "aggiorna", remove: "rimuovi", mitigate: "mitiga", not_affected: "non affetto", skip: "ignorato" };
 const WAVE = { idle: "in attesa", running: "in corso", done: "fatto", failed: "fallito" };
+
+function nodeState(row) {
+  // Cosa è successo al nodo nel giro attuale.
+  if (row.wave.status === "running") return ["info", "in corso"];
+  if (row.wave.status === "failed") return ["critical", "fallito"];
+  const outcome = row.wave.outcome;
+  if (!outcome) return ["unknown", "da fare"];
+  if (outcome.startsWith("fatto")) return ["ok", "fatto"];
+  if (outcome.startsWith("niente")) return ["ok", "niente da fare"];
+  if (outcome.startsWith("simulato")) return ["info", "simulato"];
+  if (outcome.startsWith("saltato")) return ["warning", "saltato"];
+  return ["unknown", outcome];
+}
 const PENDING = new Set(["update", "remove", "mitigate"]);
 
 let data = null;
@@ -52,10 +65,11 @@ function renderMeta(d) {
   replace(
     "meta",
     d.dry_run ? badge("info", "SIMULAZIONE") : badge("warning", "VIVO: modifica i nodi"),
-    d.suspended ? badge("warning", "giri sospesi") : null,
-    d.halted ? badge("critical", "ondate ferme") : null,
-    el("span", {}, "ultimo giro ", el("b", {}, when(d.report_at))),
-    el("span", {}, "prossimo ", el("b", {}, d.suspended ? "nessuno (sospeso)" : when(d.next_scan))),
+    d.controller.halted ? badge("critical", "FERMO") : null,
+    el("span", {}, "controllore ", el("b", {}, d.controller.text)),
+    d.controller.cycle ? el("span", {}, `giro ${d.controller.cycle} `, el("b", {}, `${d.controller.done}/${d.controller.queue} nodi`)) : null,
+    el("span", {}, "ultimo controllo ", el("b", {}, when(d.report_at))),
+    d.controller.next_cycle ? el("span", {}, "prossimo giro ", el("b", {}, when(d.controller.next_cycle))) : null,
   );
 }
 
@@ -88,9 +102,9 @@ function renderTiles(d) {
   const levels = t.levels || {};
   replace(
     "tiles",
-    tile("Nodi senza azioni in sospeso", `${t.nodes_clean} / ${t.nodes}`, "quanto manca alla fine delle ondate", t.nodes ? t.nodes_clean / t.nodes : 0),
-    tile("Advisory da applicare", t.advisories, t.deferred ? `${t.deferred} ${t.deferred === 1 ? "pacchetto rimandato" : "pacchetti rimandati"} (finestra o kernel manuale)` : "nessun rimando"),
-    tile("CVE sfruttate (KEV) aperte", t.kev, t.kev ? "da sistemare per prime" : "nessuna"),
+    tile("Giro attuale", `${d.controller.done} / ${d.controller.queue}`, "nodi già passati in questo giro", d.controller.queue ? d.controller.done / d.controller.queue : 0),
+    tile("Nodi senza azioni in sospeso", `${t.nodes_clean} / ${t.nodes}`, t.deferred ? `${t.advisories} advisory da applicare; kernel manuale su ${t.deferred} pacchetti` : `${t.advisories} advisory da applicare`, t.nodes ? t.nodes_clean / t.nodes : 0),
+    tile("CVE gravi da sistemare", t.urgent, t.urgent ? `entro ${t.deadline_hours} ore: scadenza ${when(t.next_deadline)}` : `${t.kev} CVE KEV aperte`),
     tile("Stato dei nodi", `${levels.critical || 0} · ${levels.warning || 0} · ${levels.ok || 0}`, "critici · attenzione · a posto"),
   );
 }
@@ -111,12 +125,14 @@ function renderWaves(d) {
     const rows = byGroup.get(g.name) || [];
     return el(
       "div", { class: "wave" },
-      el("div", { class: "head" }, el("b", {}, `${index + 1}. ${g.name}`), el("span", {}, g.window ? `finestra ${g.window}` : "senza finestra")),
-      el("div", { class: "chips" }, rows.length ? rows.map((row) => el(
-        "span", { class: "chip", title: row.reasons.join("; ") },
-        nodeDot(row), row.name, row.canary ? badge("info", "canary") : null,
-        badge(row.wave.status === "failed" ? "critical" : row.wave.status === "running" ? "info" : "unknown", WAVE[row.wave.status] || row.wave.status),
-      )) : el("span", { class: "hint" }, "nessun nodo")),
+      el("div", { class: "head" }, el("b", {}, `${index + 1}. ${g.name}`), el("span", {}, `${rows.length} nodi`)),
+      el("div", { class: "chips" }, rows.length ? rows.map((row) => {
+        const [level, text] = nodeState(row);
+        return el(
+          "span", { class: "chip", title: row.wave.outcome || row.reasons.join("; ") },
+          nodeDot(row), row.name, row.canary ? badge("info", "canary") : null, badge(level, text),
+        );
+      }) : el("span", { class: "hint" }, "nessun nodo")),
     );
   });
   if (byGroup.has("senza gruppo") && d.groups.length) {
@@ -124,7 +140,7 @@ function renderWaves(d) {
       el("div", { class: "chips" }, byGroup.get("senza gruppo").map((row) => el("span", { class: "chip" }, nodeDot(row), row.name)))));
   }
   replace("waves", cards);
-  replace("messages", d.messages.map((m) => el("li", {}, "› " + m)));
+  replace("messages", d.controller.results.map((r) => el("li", {}, `› ${r.node}: ${r.outcome}${r.detail ? ` (${r.detail})` : ""} · ${when(r.at)}`)));
 }
 
 function count(value, label) {
@@ -143,10 +159,9 @@ function renderNode(row) {
   const kv = [
     ["Piano", planText(row.plan)],
     row.plan.deferred.length ? ["Rimandati", `${row.plan.deferred.length}: ${[...new Set(row.plan.deferred.map((x) => x.reason))].join("; ")}`] : null,
-    row.next_window ? ["Prossima finestra", when(row.next_window)] : null,
-    ["Ondata", (WAVE[row.wave.status] || row.wave.status) + (row.wave.job ? ` (${row.wave.job})` : "")],
+    row.deadline ? ["Scadenza CVE gravi", `${when(row.deadline)}: ${row.urgent.join(", ")}`] : null,
+    ["Questo giro", row.wave.outcome || (WAVE[row.wave.status] || row.wave.status) + (row.wave.job ? ` (${row.wave.job})` : "")],
     row.wave.last_success ? ["Ultima remediation", when(row.wave.last_success)] : null,
-    row.wave.soak_until ? ["Osservazione fino a", when(row.wave.soak_until)] : null,
     row.kev.length ? ["KEV", row.kev.join(", ")] : null,
     row.profile ? ["Profilo", `${row.profile.units} servizi, ${row.profile.required} pacchetti necessari su ${row.profile.installed ?? "?"}`] : null,
     row.profile && row.profile.extra.length ? ["Aggiunti a mano", row.profile.extra.join(", ")] : null,
