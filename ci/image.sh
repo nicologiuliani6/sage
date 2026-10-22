@@ -12,3 +12,8 @@ checked docker run --rm --read-only --tmpfs /tmp --entrypoint ansible sage:ci \
 # Le pagine della dashboard sono nel pacchetto installato (non solo nella repo).
 checked docker run --rm --read-only --tmpfs /tmp --entrypoint python sage:ci -c \
   "from importlib import resources; [resources.files('sage.web').joinpath(f).read_bytes() for f in ('index.html', 'app.js', 'style.css')]"
+# TEMPORANEO: digest delle immagini di build e di prova dell'installer, da fissare.
+for ref in quay.io/pypa/manylinux2014_x86_64:latest rockylinux/rockylinux:9 rockylinux/rockylinux:8; do
+  d=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>&1 || true)
+  echo "::notice title=digest::$ref $d"
+done
