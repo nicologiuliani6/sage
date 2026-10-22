@@ -6,6 +6,9 @@
 
 timezone: Europe/Rome                    # fuso orario delle finestre di manutenzione
 
+# Dettaglio del log: info (fasi, avanzamento, una riga per chiamata LLM) o debug.
+log_level: info
+
 ssh:
   user: UTENTE_SSH                       # utente sui nodi, con sudo
   key_path: /etc/sage/ssh/id_ed25519     # chiave dedicata a SAGE (Secret montato)

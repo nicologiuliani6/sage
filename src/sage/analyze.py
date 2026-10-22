@@ -198,7 +198,9 @@ class Analyzer:
         results: dict[tuple[str, str], dict[str, CveResult]] = {}
         records: dict[str, dict[str, Any]] = {}
 
-        for name, entries in sorted(by_package.items()):
+        total = len(by_package)
+        log.info("analisi di %d pacchetti con advisory di sicurezza", total)
+        for index, (name, entries) in enumerate(sorted(by_package.items()), start=1):
             sev = {}
             all_cves: set[str] = set()
             for _, pkg in entries:
@@ -207,6 +209,15 @@ class Analyzer:
             ordered = sorted(all_cves, key=lambda c: (-(epss.get(c) or 0), c))
             skip_llm = (not kev_available) or any(c in kev for c in all_cves)
             undecided = {node for node, _ in entries}
+            log.info(
+                "pacchetto %d/%d %s: %d CVE su %d nodi%s",
+                index,
+                total,
+                name,
+                len(all_cves),
+                len(entries),
+                "" if not skip_llm else " (KEV o KEV assente: si aggiorna)",
+            )
 
             for cve in ordered:
                 if skip_llm or not undecided:

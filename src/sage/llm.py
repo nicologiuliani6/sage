@@ -226,6 +226,7 @@ class LlmChain:
             attempt = 0
             while True:
                 self._pace()
+                started = time.monotonic()
                 try:
                     resp = self._post(
                         f"{ep.base_url}/chat/completions",
@@ -234,7 +235,17 @@ class LlmChain:
                         self.cfg.timeout_seconds,
                     )
                     content = resp["choices"][0]["message"]["content"]
-                    return parse_response(content), ep
+                    result = parse_response(content)
+                    log.info(
+                        "LLM %s: %s (%s) in %.1f s, chiamata %d di %d",
+                        ep.name,
+                        cve,
+                        package,
+                        time.monotonic() - started,
+                        self.calls,
+                        self.cfg.max_calls_per_run,
+                    )
+                    return result, ep
                 except urllib.error.HTTPError as exc:
                     delay = self._backoff(exc, attempt)
                     if delay is None:

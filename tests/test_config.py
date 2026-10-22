@@ -68,6 +68,7 @@ def test_minimal_config_runs_in_safe_mode():
             minimal(llm={"endpoints": [{"name": "x", "base_url": "ftp://x", "model": "m"}]}),
             "base_url",
         ),
+        (minimal(log_level="verbose"), "log_level"),
     ],
 )
 def test_invalid_configs_are_rejected(raw, fragment):
