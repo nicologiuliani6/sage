@@ -19,6 +19,7 @@ import yaml
 
 KERNEL_MODES = ("auto", "window", "manual")
 DRAIN_MODES = ("evict", "wait-empty")
+LOG_LEVELS = ("info", "debug")
 WINDOW_RE = re.compile(
     r"^(?P<days>(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun))*) "
     r"(?P<start>([01]\d|2[0-3]):[0-5]\d)-(?P<end>([01]\d|2[0-3]):[0-5]\d)$"
@@ -106,6 +107,8 @@ class Config:
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     # Fuso orario delle finestre di manutenzione.
     timezone: str = "UTC"
+    # Dettaglio del log: "info" (fasi e avanzamento) o "debug" (anche ogni CVE e la cache).
+    log_level: str = "info"
 
     def group(self, name: str) -> NodeGroup | None:
         return next((g for g in self.groups if g.name == name), None)
@@ -139,6 +142,11 @@ def parse(raw: dict[str, Any]) -> Config:
         errors.append(f"timezone: fuso orario sconosciuto ({timezone!r}), es. 'Europe/Rome'")
         timezone = "UTC"
 
+    log_level = raw.get("log_level", "info")
+    if log_level not in LOG_LEVELS:
+        errors.append(f"log_level: uno tra {', '.join(LOG_LEVELS)}")
+        log_level = "info"
+
     group_names = {g.name for g in groups}
     for ep in llm.endpoints:
         if ep.hosted_in_group and ep.hosted_in_group not in group_names:
@@ -147,7 +155,13 @@ def parse(raw: dict[str, Any]) -> Config:
     if errors:
         raise ConfigError("configurazione non valida:\n- " + "\n- ".join(errors))
     return Config(
-        ssh=ssh, llm=llm, groups=groups, policy=policy, sources=sources, timezone=str(timezone)
+        ssh=ssh,
+        llm=llm,
+        groups=groups,
+        policy=policy,
+        sources=sources,
+        timezone=str(timezone),
+        log_level=log_level,
     )
 
 

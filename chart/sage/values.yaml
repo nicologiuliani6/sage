@@ -30,6 +30,7 @@ extraEnv: []                # es. [{name: HTTPS_PROXY, value: "http://proxy:3128
 # Diventa /etc/sage/config/config.yaml. Schema e commenti in examples/config.example.yaml.
 config:
   timezone: UTC             # fuso delle finestre di manutenzione, es. Europe/Rome
+  log_level: info           # info (fasi e avanzamento) o debug
   ssh:
     user: ""                # OBBLIGATORIO: utente SSH sui nodi
     key_path: /etc/sage/ssh/id_ed25519

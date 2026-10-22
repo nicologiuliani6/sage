@@ -16,6 +16,10 @@ from sage import __version__, config
 log = logging.getLogger("sage")
 
 
+def set_log_level(cfg: config.Config) -> None:
+    logging.getLogger().setLevel(logging.DEBUG if cfg.log_level == "debug" else logging.INFO)
+
+
 def _release() -> str:
     return os.environ.get("SAGE_RELEASE", "sage")
 
@@ -40,14 +44,18 @@ def cmd_scan(args: argparse.Namespace) -> int:
     from sage.llm import LlmChain
 
     cfg = config.load(args.config)
+    set_log_level(cfg)
     kube = Kube()
     release = _release()
     now = datetime.now(ZoneInfo(cfg.timezone))
+    log.info("giro %s (%s)", "in simulazione" if args.dry_run else "REALE", cfg.timezone)
 
     nodes = kube.list_nodes()
     groups, warnings = assign_groups(nodes, cfg.groups)
     targets = [n for n in nodes if groups.get(n.name)]
+    log.info("nodi nel cluster: %d, gestiti da SAGE: %d", len(nodes), len(targets))
     reports = collect(targets, cfg, paths.workdir() / "scan")
+    log.info("raccolta completata: %d nodi su %d", len(reports), len(targets))
     warnings += [
         f"nodo {n.name} non raggiunto: escluso da questo giro"
         for n in targets
@@ -66,7 +74,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
             for c in a.get("cves", [])
         }
     )
+    log.info(
+        "catalogo KEV: %s", f"{len(kev)} CVE sfruttate" if kev is not None else "non disponibile"
+    )
     epss = sources.fetch_epss(cfg.sources, all_cves)
+    log.info("EPSS: %d CVE su %d", len(epss), len(all_cves))
     chain = LlmChain(cfg.llm)
     analyzer = Analyzer(
         cfg, chain, lambda cve: sources.fetch_cve_record(cfg.sources, cve), opa.decide, now
@@ -75,6 +87,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     state["idle"] = analysis.idle
     kube.write_json(f"{release}-llm-cache", analysis.cache)
 
+    log.info("analisi completata, chiamate LLM: %d", chain.calls)
     plans = act.build_plans(analysis.decisions, groups, now)
     resumed = []
     if kube.pop_flag(f"{release}-resume") and state.get("halted"):
@@ -89,6 +102,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     data = report.to_json(analysis, plan_dicts, messages, warnings, now, args.dry_run)
     data["vex"] = report.openvex(analysis, reports, now)
     kube.write_json(f"{release}-report", data)
+    log.info("report salvato in %s-report", release)
     print(report.summary(analysis, groups, plan_dicts, messages, warnings, args.dry_run))
     return 0
 
@@ -98,6 +112,7 @@ def cmd_remediate(args: argparse.Namespace) -> int:
     from sage.kube import Kube
 
     cfg = config.load(args.config)
+    set_log_level(cfg)
     plan = json.loads(base64.b64decode(args.plan))
     return remediate.run(cfg, Kube(), args.node, plan, paths.workdir() / "remediate")
 
@@ -140,7 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("resume", help="sblocca le ondate dopo un errore controllato a mano")
 
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     if args.command == "version":
         print(__version__)
