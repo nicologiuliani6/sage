@@ -1607,6 +1607,15 @@ class Installer:
             return self.open_dashboard(current)
         if current is None:
             return self.configure({}, new=True)
+        if self.args.reinstall:
+            if self.uninstall(current, reinstall=True) != 0:
+                return 0
+            return self.configure({}, new=True)
+        if self.args.live:
+            if not current.get("dryRun", True):
+                ui.ok("SAGE è già in modalità reale")
+                return 0
+            return self.toggle_live(current)
         while True:
             live = not current.get("dryRun", True)
             suspended = current.get("suspend", True)
@@ -2900,7 +2909,9 @@ class Installer:
         ui.warn(f"il controllo non è finito bene: kubectl -n {self.ns} describe job {job}")
         return 1
 
-    def uninstall(self, current: dict) -> int:
+    def uninstall(self, current: dict, reinstall: bool = False) -> int:
+        """Disinstalla. Con `reinstall` tiene namespace, storico e cache dell'LLM (le CVE
+        già analizzate non si richiedono) e restituisce 1 se l'utente rinuncia."""
         ui = self.ui
         active = self.kjson(
             "get",
@@ -2910,30 +2921,44 @@ class Installer:
             ns=True,
         ).get("items", [])
         running = [j["metadata"]["name"] for j in active if j.get("status", {}).get("active")]
-        help = (
-            "Toglie SAGE dal cluster, la sua chiave dai nodi e le etichette dei gruppi. "
-            "Lo storico delle modifiche viene salvato anche in un file qui."
-        )
+        if reinstall:
+            help = (
+                "Toglie la configurazione attuale (chiave SSH, etichette, segreti, stato) e "
+                "riparte da zero con le domande dell'installazione. Restano lo storico e la "
+                "cache dell'LLM."
+            )
+        else:
+            help = (
+                "Toglie SAGE dal cluster, la sua chiave dai nodi e le etichette dei gruppi. "
+                "Lo storico delle modifiche viene salvato anche in un file qui."
+            )
         if running:
             help += (
                 "\n\nATTENZIONE: remediation in corso (" + ", ".join(running) + "): un nodo "
                 "potrebbe restare in cordon se interrompi ora."
             )
-        if not ui.yes("Disinstallo SAGE?", False, help=help):
-            return 0
+        if not ui.yes(
+            "Reinstallo SAGE da zero?" if reinstall else "Disinstallo SAGE?", False, help=help
+        ):
+            return 1 if reinstall else 0
         note = self.ask_note()
-        ui.busy("Disinstallo SAGE...")
-        self.record("disinstallazione", [], note)
+        ui.busy("Tolgo l'installazione attuale..." if reinstall else "Disinstallo SAGE...")
+        self.record(
+            "reinstallazione: tolta la configurazione" if reinstall else "disinstallazione",
+            [],
+            note,
+        )
         nodes = parse_nodes(self.kjson("get", "nodes"))
         labelled = [n for n in nodes if GROUP_LABEL in n.labels]
         secret = self.read_secret(f"{self.release}-ssh")
         user = current.get("config", {}).get("ssh", {}).get("user")
         self.port = int(current.get("config", {}).get("ssh", {}).get("port", 22))
         if secret.get("id_ed25519") and user and labelled:
-            key = self.tmp / "id_ed25519"
+            # Nomi propri: con --reinstall nella stessa cartella si crea poi la chiave nuova.
+            key = self.tmp / "old_id_ed25519"
             key.write_text(secret["id_ed25519"])
             key.chmod(0o600)
-            known_hosts = self.tmp / "known_hosts"
+            known_hosts = self.tmp / "old_known_hosts"
             known_hosts.write_text(secret.get("known_hosts", ""))
             public = run(["ssh-keygen", "-y", "-f", str(key)]).stdout.strip()
             for n, proc in self.parallel(
@@ -2959,13 +2984,22 @@ class Installer:
         ui.ok(f"storico salvato in {saved}")
         ns = self.kjson("get", "namespace", self.ns)
         ours = ns["metadata"].get("labels", {}).get("app.kubernetes.io/managed-by") == MANAGED_BY
+        if reinstall:
+            for suffix in ("state", "report", "controller", "resume", "scan-now"):
+                self.kubectl(
+                    "delete", "configmap", f"{self.release}-{suffix}", ns=True, check=False
+                )
+            for suffix in ("ssh", "llm", "pull"):
+                self.kubectl("delete", "secret", f"{self.release}-{suffix}", ns=True, check=False)
+            ui.ok("installazione precedente tolta: storico e cache dell'LLM conservati")
+            return 0
         if ours and ui.yes(
             f"Elimino anche il namespace {self.ns}?",
             help="Contiene stato, report, segreti e storico di SAGE (lo storico è già salvato).",
         ):
             self.kubectl("delete", "namespace", self.ns, "--wait=false")
         else:
-            for suffix in ("state", "report", "llm-cache", "resume"):
+            for suffix in ("state", "report", "controller", "llm-cache", "resume", "scan-now"):
                 self.kubectl(
                     "delete", "configmap", f"{self.release}-{suffix}", ns=True, check=False
                 )
@@ -3000,7 +3034,15 @@ def parse_args(argv=None):
     p.add_argument(
         "--live",
         action="store_true",
-        help="installa (o riconfigura) direttamente in modalità reale, senza simulazione",
+        help=(
+            "modalità reale: nuova installazione (o --reinstall) senza simulazione; "
+            "su un'installazione esistente passa al vivo"
+        ),
+    )
+    p.add_argument(
+        "--reinstall",
+        action="store_true",
+        help="toglie l'installazione attuale e la rifà da zero (tiene storico e cache LLM)",
     )
     p.add_argument(
         "--allow-remove",

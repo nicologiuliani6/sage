@@ -149,6 +149,9 @@ def kubectl(args):
         return out("Forwarding from 127.0.0.1")  # in realtà resta aperto fino a Ctrl+C
     if a[0] == "delete":
         state["deleted"].append(a[1:])
+        store = {"secret": "secrets", "configmap": "configmaps"}.get(a[1])
+        if store:
+            state[store].pop(a[2], None)
         save(state)
         return 0
     return fail(f"kubectl finto: comando inatteso {a}", 3)
