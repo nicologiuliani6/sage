@@ -31,6 +31,10 @@ modificare il cluster né una nuova superficie d'attacco.
   sospeso, advisory da applicare, nodi già passati nel giro, scadenza delle CVE gravi,
   prossimo giro), una scheda per nodo con il motivo di ogni decisione, le CVE ordinate per
   urgenza con filtri, lo storico e il download del VEX.
+- **Tempo reale**: la pagina rilegge lo stato ogni `dashboard.refreshSeconds` (5 s, minimo 2) e
+  si ridisegna solo se qualcosa è cambiato, senza chiudere i dettagli aperti. Il server tiene i
+  dati per lo stesso intervallo, quindi più schede aperte non moltiplicano le letture dall'API.
+  Con la scheda nascosta non legge niente; un indicatore segnala se i dati sono vecchi.
 - **Pagina sicura per costruzione**: Content-Security-Policy che permette solo risorse della
   dashboard, nessun HTML costruito dai dati (solo `textContent`), nessuna cache.
 

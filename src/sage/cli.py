@@ -168,8 +168,9 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     from sage import dashboard
     from sage.kube import Kube
 
-    source = dashboard.Source(Kube(), _release(), args.config)
-    dashboard.serve(source, args.bind, args.port, args.refresh)
+    refresh = max(dashboard.MIN_REFRESH, args.refresh)
+    source = dashboard.Source(Kube(), _release(), args.config, ttl=refresh)
+    dashboard.serve(source, args.bind, args.port, refresh)
     return 0
 
 
@@ -203,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", required=True)
     p.add_argument("--bind", default="127.0.0.1", help="indirizzo (predefinito solo locale)")
     p.add_argument("--port", type=int, default=8080)
-    p.add_argument("--refresh", type=int, default=60, help="secondi tra un aggiornamento e l'altro")
+    p.add_argument(
+        "--refresh", type=int, default=5, help="secondi tra un aggiornamento e l'altro (min. 2)"
+    )
 
     args = parser.parse_args(argv)
     logging.basicConfig(

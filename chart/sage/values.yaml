@@ -63,7 +63,7 @@ resources:
 dashboard:
   enabled: true
   port: 8080
-  refreshSeconds: 60          # ogni quanto la pagina rilegge i dati
+  refreshSeconds: 5           # ogni quanto la pagina rilegge i dati (minimo 2)
   resources:
     requests:
       cpu: 10m

@@ -23,6 +23,8 @@ const PENDING = new Set(["update", "remove", "mitigate"]);
 
 let data = null;
 let timer = null;
+let lastOk = 0; // Date.now() dell'ultima lettura riuscita
+let lastBody = ""; // risposta precedente: se non cambia non si ridisegna
 
 function el(tag, attrs, ...children) {
   const node = document.createElement(tag);
@@ -191,8 +193,13 @@ function renderNode(row) {
       count(row.actions.not_affected, "non affetti"),
       count(row.priorities.act, "priorità act")),
     el("dl", { class: "kv" }, kv.map(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
-    pkgs.length ? el("details", {}, el("summary", {}, `Pacchetti (${pkgs.length})`), el("ul", { class: "pkgs" }, pkgs)) : null,
+    pkgs.length ? el("details", { "data-node": row.name, open: openDetails().has(row.name) }, el("summary", {}, `Pacchetti (${pkgs.length})`), el("ul", { class: "pkgs" }, pkgs)) : null,
   );
+}
+
+function openDetails() {
+  // I "Pacchetti" aperti restano aperti quando la pagina si ridisegna.
+  return new Set([...document.querySelectorAll("#nodes details[open]")].map((x) => x.dataset.node));
 }
 
 function renderNodes(d) {
@@ -243,33 +250,65 @@ function renderHistory(d) {
   )) : el("li", {}, "Nessuna modifica registrata."));
 }
 
+function renderAll(d) {
+  renderMeta(d);
+  renderAlarms(d);
+  renderTiles(d);
+  renderWaves(d);
+  renderNodes(d);
+  renderCves();
+  renderHistory(d);
+}
+
+function renderLive() {
+  // Indicatore "in tempo reale": verde se l'ultima lettura è recente, rosso se no.
+  const live = document.getElementById("live");
+  if (!data) return;
+  const age = Math.round((Date.now() - lastOk) / 1000);
+  const stale = age > 3 * data.refresh_seconds;
+  live.className = "live" + (stale ? " stale" : "");
+  live.replaceChildren(
+    el("span", { class: "pulse", "aria-hidden": "true" }),
+    stale ? `dati vecchi di ${age} s` : `in tempo reale · letto ${age} s fa`,
+  );
+  document.getElementById("footer").textContent =
+    `Dashboard ${data.dashboard_version} · SAGE dell'ultimo giro ${data.sage_version || "?"} · si aggiorna ogni ${data.refresh_seconds} s`;
+}
+
 async function load() {
   const error = document.getElementById("error");
+  clearTimeout(timer);
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
     if (!response.ok) throw new Error(await response.text());
-    data = await response.json();
+    const body = await response.text();
+    data = JSON.parse(body);
+    lastOk = Date.now();
     error.hidden = true;
-    renderMeta(data);
-    renderAlarms(data);
-    renderTiles(data);
-    renderWaves(data);
-    renderNodes(data);
-    renderCves();
-    renderHistory(data);
-    document.getElementById("footer").textContent =
-      `Dashboard ${data.dashboard_version} · SAGE dell'ultimo giro ${data.sage_version || "?"} · aggiornata ${when(data.now)} · si aggiorna ogni ${data.refresh_seconds} s`;
+    // "now" cambia a ogni lettura: il confronto lo ignora.
+    const key = body.replace(/"now":\s*"[^"]*"/, "");
+    if (key !== lastBody) {
+      lastBody = key;
+      renderAll(data);
+    }
   } catch (exc) {
     error.textContent = "Dati non disponibili: " + exc.message;
     error.hidden = false;
   }
-  clearTimeout(timer);
-  timer = setTimeout(load, ((data && data.refresh_seconds) || 60) * 1000);
+  renderLive();
+  // Con la scheda nascosta non si legge niente: si riparte quando torna visibile.
+  if (!document.hidden) timer = setTimeout(load, ((data && data.refresh_seconds) || 5) * 1000);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   for (const id of ["cve-search", "cve-node", "cve-open"]) {
     document.getElementById(id).addEventListener("input", renderCves);
   }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) load();
+  });
+  // Ogni minuto si ridisegna comunque, per i tempi relativi ("3 minuti fa").
+  setInterval(() => data && renderAll(data), 60000);
+  setInterval(renderLive, 1000);
   load();
 });
