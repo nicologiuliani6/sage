@@ -51,6 +51,14 @@ disinstalla.
 - Chart: \`${chart}\` (sha256 \`${chart_sha}\`)
 NOTES
 
-gh release create "$GITHUB_REF_NAME" \
-  "$dist/sage-install.py" "$dist/$chart" "$dist/SHA256SUMS" \
-  --repo "$GITHUB_REPOSITORY" --title "SAGE ${version}" --notes-file "$dist/notes.md"
+assets=("$dist/sage-install.py" "$dist/$chart" "$dist/SHA256SUMS")
+if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+  # Release creata a mano dalla pagina di GitHub (che crea anche il tag): si completano
+  # file e note.
+  gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+  gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+    --title "SAGE ${version}" --notes-file "$dist/notes.md"
+else
+  gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+    --repo "$GITHUB_REPOSITORY" --title "SAGE ${version}" --notes-file "$dist/notes.md"
+fi
