@@ -145,3 +145,30 @@ test_batch_keeps_order if {
 		{"action": "not_affected", "schedule": "auto"},
 	]
 }
+
+# --- catena di avvio
+
+unused := {
+	"status": "not_affected",
+	"verified": true,
+	"justification": "vulnerable_code_not_in_execute_path",
+}
+
+mitigated := {
+	"status": "not_affected",
+	"verified": true,
+	"justification": "inline_mitigations_already_exist",
+}
+
+boot_with(applicability) := object.union(
+	with_pkg(base, {"name": "grub2-tools"}),
+	{"cves": [{"kev": false, "applicability": applicability}]},
+)
+
+test_boot_package_never_not_affected_for_non_use if act(boot_with(unused)) == "update"
+
+test_userland_package_can_be_not_affected_for_non_use if {
+	act(with_pkg(boot_with(unused), {"name": "cockpit-ws"})) == "not_affected"
+}
+
+test_boot_package_not_affected_for_other_reasons if act(boot_with(mitigated)) == "not_affected"

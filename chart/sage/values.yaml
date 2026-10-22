@@ -47,7 +47,8 @@ config:
   policy:
     protected_packages: []
     protected_modules: []
-    idle_scans_required: 3
+    idle_scans_required: 3  # "inutilizzato" solo dopo tanti controlli consecutivi...
+    idle_days_required: 7   # ...e tanti giorni
 
 resources:
   requests:

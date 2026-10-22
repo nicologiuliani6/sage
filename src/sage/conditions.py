@@ -61,6 +61,14 @@ def in_use(ctx: dict[str, Any]) -> bool:
     )
 
 
+# Pacchetti della catena di avvio: eseguiti all'avvio, mai "inutilizzati" dai processi.
+BOOT_PACKAGES = ("grub2*", "shim*", "dracut*", "microcode_ctl", "*-firmware*", "linux-firmware*")
+
+
+def is_boot_package(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, p) for p in BOOT_PACKAGES)
+
+
 def verify(
     cond: dict[str, Any],
     package: str,
@@ -68,11 +76,12 @@ def verify(
     kernel: dict[str, Any],
     record: dict[str, Any] | None,
     idle_confirmed: bool,
-    idle_scans_required: int,
+    idle_label: str,
 ) -> Check:
     record = record or {}
     kind = cond.get("type")
     is_kernel = package.startswith("kernel")
+    boot = is_boot_package(package)
 
     if kind == "kernel_module":
         if not is_kernel:
@@ -100,6 +109,11 @@ def verify(
             return Check("false", "caricamento dei moduli disabilitato", MITIGATIONS_EXIST)
         return Check("true", f"modulo {module} caricabile su richiesta")
 
+    if kind in ("network_service", "component_in_use") and boot:
+        # Bootloader, initramfs, microcodice, firmware: li esegue l'avvio del nodo, non un
+        # processo. Che oggi nessun processo li usi non dice niente.
+        return Check("unknown", "eseguito all'avvio del nodo, non dai processi")
+
     if kind == "network_service":
         if is_kernel:
             return Check("unknown", "servizio di rete non applicabile al kernel")
@@ -111,13 +125,10 @@ def verify(
         if ctx.get("listening") or service_active(ctx):
             return Check("true", "servizio attivo, abilitato o in ascolto")
         if not idle_confirmed:
-            return Check(
-                "unknown", f"servizio spento, ma non da {idle_scans_required} scansioni consecutive"
-            )
+            return Check("unknown", f"servizio spento, ma non ancora {idle_label}")
         return Check(
             "false",
-            f"nessuna porta in ascolto, unit spente e non abilitate da {idle_scans_required} "
-            "scansioni",
+            f"nessuna porta in ascolto, unit spente e non abilitate {idle_label}",
             NOT_IN_EXECUTE_PATH,
         )
 
@@ -131,12 +142,10 @@ def verify(
         if ctx.get("needed_by"):
             return Check("true", f"serve a {ctx['needed_by']} (profilo del nodo)")
         if not idle_confirmed:
-            return Check(
-                "unknown", f"inutilizzato, ma non da {idle_scans_required} scansioni consecutive"
-            )
+            return Check("unknown", f"inutilizzato, ma non ancora {idle_label}")
         return Check(
             "false",
-            f"nessun processo usa il pacchetto da {idle_scans_required} scansioni",
+            f"nessun processo usa il pacchetto {idle_label}",
             NOT_IN_EXECUTE_PATH,
         )
 

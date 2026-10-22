@@ -13,7 +13,7 @@ mano) o essere una dipendenza di altro.
 La rimozione non è una proposta dell'LLM. La policy OPA la sceglie solo se, sul nodo:
 
 - nessun processo esegue o carica il pacchetto, nessuna porta, unit spente e non abilitate;
-- lo stato vale da `idle_scans_required` scansioni consecutive;
+- lo stato vale da `idle_scans_required` controlli consecutivi e `idle_days_required` giorni;
 - `dnf remove --assumeno --noautoremove` simulato non toglie altri pacchetti (e dnf non rifiuta);
 - il pacchetto non è protetto da configurazione né è un kernel;
 - il gruppo lo permette (`allow_remove`, disattivato di default).

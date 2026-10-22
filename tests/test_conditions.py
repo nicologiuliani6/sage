@@ -16,7 +16,9 @@ def km(module="algif_aead"):
 
 
 def verify(cond, pkg="kernel-core", ctx=None, kernel=None, record=None, idle=True):
-    return c.verify(cond, pkg, ctx or CTX_IDLE, kernel or kernel_facts(), record, idle, 3)
+    return c.verify(
+        cond, pkg, ctx or CTX_IDLE, kernel or kernel_facts(), record, idle, "da 7 giorni"
+    )
 
 
 # --- kernel_module
@@ -180,3 +182,12 @@ def test_package_needed_by_node_service_is_in_use():
     pkg["context"]["needed_by"] = "sshd.service"
     check = c.verify({"type": "component_in_use"}, "openssl-libs", pkg["context"], {}, {}, True, 3)
     assert check.state == "true" and "sshd.service" in check.evidence
+
+
+@pytest.mark.parametrize(
+    "pkg", ["grub2-tools", "shim-x64", "dracut", "microcode_ctl", "linux-firmware"]
+)
+def test_boot_packages_are_never_unused(pkg):
+    for cond in ({"type": "component_in_use"}, {"type": "network_service"}):
+        check = verify(cond, pkg=pkg, record=REC_NET)
+        assert check.state == "unknown" and "avvio" in check.evidence

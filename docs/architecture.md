@@ -39,8 +39,8 @@ condizioni **necessarie** per sfruttarla, scelte da un catalogo chiuso:
 | Condizione | Falsa (quindi "non affetto") solo se | Controlli di coerenza |
 |---|---|---|
 | `kernel_module` | il modulo esiste ma è bloccato (`install /bin/false`) o il caricamento è disabilitato | il modulo deve contenere i file colpiti dalla CVE; un modulo solo "non caricato" conta come sfruttabile (caricamento su richiesta) |
-| `network_service` | nessuna porta in ascolto, unit spente e non abilitate da N scansioni | il vettore CVSS deve essere di rete |
-| `component_in_use` | nessun processo usa il pacchetto da N scansioni | non vale per pacchetti con file setuid, setgid o con capability |
+| `network_service` | nessuna porta in ascolto, unit spente e non abilitate da N controlli e N giorni | il vettore CVSS deve essere di rete; mai per i pacchetti della catena di avvio |
+| `component_in_use` | nessun processo usa il pacchetto da N controlli e N giorni, e nessun servizio del nodo ne ha bisogno | non vale per pacchetti con file setuid, setgid o con capability, né per bootloader, initramfs, microcodice e firmware |
 
 Se una condizione non è verificabile la CVE conta come applicabile. Le risposte sono validate
 contro uno schema e messe in cache per CVE e pacchetto.
@@ -48,7 +48,7 @@ contro uno schema e messe in cache per CVE e pacchetto.
 ## Rimozione e mitigazione
 
 - **Rimozione**: decisa dalla policy sui fatti, non dall'LLM. Pacchetto inutilizzato da
-  `idle_scans_required` scansioni, `dnf remove` simulato senza altri pacchetti coinvolti, non
+  `idle_scans_required` controlli e `idle_days_required` giorni, `dnf remove` simulato senza altri pacchetti coinvolti, non
   protetto, gruppo con `allow_remove`.
 - **Mitigazione**: blocco di un modulo del kernel proposto dall'LLM e verificato (modulo
   disponibile ma non caricato su nessun nodo del gruppo, coerente con i file colpiti, non

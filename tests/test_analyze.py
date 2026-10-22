@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from sage import opa
-from sage.analyze import Analyzer, priority, update_idle
+from sage.analyze import Analyzer, idle_confirmed, idle_label, priority, update_idle
 from sage.llm import LlmChain
 from tests.conftest import advisory, base_config, kernel_facts, needs_opa, package, report
 
@@ -260,10 +260,39 @@ def test_fallback_entries_are_rechecked_after_a_day():
     assert analysis.cache["CVE-2026-31431|kernel-core"]["endpoint"] == "primario"
 
 
-def test_update_idle_counts_consecutive_scans():
+def test_update_idle_counts_scans_and_keeps_since():
+    t0 = datetime(2026, 10, 1, tzinfo=UTC)
     reports = {"w1": report({"a": package([], idle=True), "b": package([], idle=False)})}
-    idle = update_idle(reports, {"w1|a": 2, "w1|b": 4, "w9|z": 7})
-    assert idle == {"w1|a": 3, "w9|z": 7}  # b resettato, nodo w9 non raggiunto: conservato
+    previous = {"w1|a": {"count": 2, "since": t0.isoformat()}, "w1|b": {"count": 4, "since": "x"}}
+    idle = update_idle(
+        reports, {**previous, "w9|z": {"count": 7, "since": "y"}}, t0 + timedelta(days=1)
+    )
+    # b in uso: azzerato; nodo w9 non raggiunto: conservato
+    assert idle == {
+        "w1|a": {"count": 3, "since": t0.isoformat()},
+        "w9|z": {"count": 7, "since": "y"},
+    }
+    # voce di una versione precedente (solo il numero): il periodo riparte da adesso
+    later = t0 + timedelta(days=2)
+    assert update_idle(reports, {"w1|a": 5}, later)["w1|a"] == {
+        "count": 6,
+        "since": later.isoformat(),
+    }
+
+
+def test_idle_needs_both_scans_and_days():
+    policy = base_config(policy={"idle_scans_required": 3, "idle_days_required": 7}).policy
+    t0 = datetime(2026, 10, 1, tzinfo=UTC)
+    entry = {"count": 50, "since": t0.isoformat()}
+    assert not idle_confirmed(
+        entry, policy, t0 + timedelta(days=6)
+    )  # tanti controlli, pochi giorni
+    assert idle_confirmed(entry, policy, t0 + timedelta(days=7))
+    assert not idle_confirmed(
+        {"count": 2, "since": t0.isoformat()}, policy, t0 + timedelta(days=30)
+    )
+    assert not idle_confirmed(4, policy, t0)  # formato vecchio: mai confermato da solo
+    assert idle_label(policy) == "da 7 giorni (almeno 3 controlli)"
 
 
 def test_priority():

@@ -81,7 +81,11 @@ class NodeGroup:
 class PolicyConfig:
     protected_packages: tuple[str, ...] = ()
     protected_modules: tuple[str, ...] = ()
+    # Un pacchetto è "inutilizzato" solo se nessun processo lo usa da almeno tanti controlli
+    # consecutivi E da almeno tanti giorni: con il controllore in loop i controlli sono
+    # frequenti, e gli strumenti usati a mano o di notte vanno visti per un periodo lungo.
     idle_scans_required: int = 3
+    idle_days_required: int = 7
     epss_attend_threshold: float = 0.1
     # Entro quante ore dalla scoperta una CVE grave (priorità act) deve essere sistemata.
     urgent_deadline_hours: int = 6
@@ -367,6 +371,7 @@ def _parse_policy(raw: dict[str, Any], errors: list[str]) -> PolicyConfig:
         protected_packages=_str_list(raw, "protected_packages", where, errors),
         protected_modules=_str_list(raw, "protected_modules", where, errors),
         idle_scans_required=_int(raw, "idle_scans_required", 3, where, errors, 1),
+        idle_days_required=_int(raw, "idle_days_required", 7, where, errors, 0),
         epss_attend_threshold=threshold,
         urgent_deadline_hours=_int(raw, "urgent_deadline_hours", 6, where, errors, 1),
     )

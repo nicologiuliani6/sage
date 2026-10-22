@@ -39,7 +39,11 @@ def base_config(**overrides):
                 "kernel": "auto",
             },
         ],
-        "policy": {"protected_packages": ["glibc", "systemd"], "idle_scans_required": 2},
+        "policy": {
+            "protected_packages": ["glibc", "systemd"],
+            "idle_scans_required": 2,
+            "idle_days_required": 0,
+        },
     }
     raw.update(overrides)
     return config.parse(raw)

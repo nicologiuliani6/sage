@@ -72,7 +72,10 @@ groups:                                  # i nodi fuori da ogni gruppo non vengo
     kernel: auto
 
 policy:
-  idle_scans_required: 3                 # scansioni consecutive "inutilizzato" prima di agire
+  # "Inutilizzato" (base per "non affetto" e rimozione) solo se nessun processo usa il pacchetto
+  # da almeno tanti controlli consecutivi E da almeno tanti giorni.
+  idle_scans_required: 3
+  idle_days_required: 7
   urgent_deadline_hours: 6               # CVE gravi (KEV, sfruttate): da sistemare entro queste ore
   protected_packages:                    # mai rimossi
     - "kernel*"
