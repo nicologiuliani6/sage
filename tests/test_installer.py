@@ -850,12 +850,23 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(live["changes"], ["dryRun: true → false"])
         self.assertEqual(live["note"], "canary controllato")
 
+        # Installer di una versione nuova: compare "Aggiorna", la configurazione resta.
+        new_image = "registry.example/owner/sage@sha256:" + "b" * 64
+        code, _ = self.run_installer(["1", "s", "", "n"], args=("--image", new_image))
+        self.assertEqual(code, 0)
+        state = self.read_state()
+        self.assertEqual(state["helm"]["values"]["image"]["digest"], "sha256:" + "b" * 64)
+        self.assertFalse(state["helm"]["values"]["dryRun"])
+        update = self.history()[-1]
+        self.assertEqual(update["action"], "aggiornamento")
+        self.assertIn("immagine: " + IMAGE + " → " + new_image, update["changes"])
+
         # Storico dal menu: voce più recente, dettagli, indietro, esci.
-        code, _ = self.run_installer(["5", "2", "1", "1", "7"])
+        code, _ = self.run_installer(["5", "2", "1", "1", "7"], args=("--image", new_image))
         self.assertEqual(code, 0)
 
         # Disinstallazione: chiave tolta dai nodi, etichette rimosse, storico salvato.
-        code, _ = self.run_installer(["6", "s", "", ""])
+        code, _ = self.run_installer(["6", "s", "", ""], args=("--image", new_image))
         self.assertEqual(code, 0)
         state = self.read_state()
         self.assertIsNone(state["helm"])
@@ -873,6 +884,7 @@ class EndToEnd(unittest.TestCase):
                 "giro manuale",
                 "riconfigurazione",
                 "passaggio al vivo",
+                "aggiornamento",
                 "disinstallazione",
             ],
         )

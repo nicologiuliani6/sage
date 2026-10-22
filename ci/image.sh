@@ -5,3 +5,7 @@ checked docker build -t sage:ci .
 checked docker run --rm sage:ci version
 checked docker run --rm --entrypoint opa sage:ci version
 checked docker run --rm --entrypoint ansible-galaxy sage:ci collection list kubernetes.core
+# Come nel cluster: utente 10001, radice in sola lettura, /tmp vuota e scrivibile. I playbook
+# eseguono task in locale: Ansible deve poter creare le sue cartelle temporanee.
+checked docker run --rm --read-only --tmpfs /tmp --entrypoint ansible sage:ci \
+  localhost -c local -m ansible.builtin.ping

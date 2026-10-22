@@ -1541,32 +1541,75 @@ class Installer:
                 f"Modalità: {'REALE' if live else 'simulazione'}. "
                 f"Giri automatici: {'sospesi' if suspended else 'attivi'}."
             )
-            options = [
-                "Riconfigura: nodi, gruppi, LLM, frequenza (parte da quella attuale)",
-                "Torna alla simulazione"
-                if live
-                else "Passa al vivo: SAGE applicherà le remediation",
-                "Riattiva i giri automatici" if suspended else "Sospendi i giri automatici",
-                "Lancia un giro adesso",
-                "Storico delle modifiche",
-                "Disinstalla SAGE",
-                "Esci",
+            entries = []
+            target = self.args.image or RELEASE.get("image")
+            if target and target != image_ref(current):
+                version = RELEASE.get("version", "di questo installer")
+                entries.append((f"Aggiorna SAGE alla versione {version}", "update"))
+            entries += [
+                (
+                    "Riconfigura: nodi, gruppi, LLM, frequenza (parte da quella attuale)",
+                    "configure",
+                ),
+                (
+                    "Torna alla simulazione"
+                    if live
+                    else "Passa al vivo: SAGE applicherà le remediation",
+                    "live",
+                ),
+                (
+                    "Riattiva i giri automatici" if suspended else "Sospendi i giri automatici",
+                    "suspend",
+                ),
+                ("Lancia un giro adesso", "run"),
+                ("Storico delle modifiche", "history"),
+                ("Disinstalla SAGE", "uninstall"),
+                ("Esci", "exit"),
             ]
-            choice = ui.choose("Cosa vuoi fare?", options, help=status)
-            if choice == 0:
+            pick = ui.choose("Cosa vuoi fare?", [label for label, _ in entries], help=status)
+            action = entries[pick][1]
+            if action == "update":
+                return self.update(current, target)
+            if action == "configure":
                 return self.configure(current, new=False)
-            if choice == 1:
+            if action == "live":
                 return self.toggle_live(current)
-            if choice == 2:
+            if action == "suspend":
                 return self.toggle_suspend(current)
-            if choice == 3:
+            if action == "run":
                 return self.run_now()
-            if choice == 4:
+            if action == "history":
                 self.show_history()
                 continue
-            if choice == 5:
+            if action == "uninstall":
                 return self.uninstall(current)
             return 0
+
+    def update(self, current: dict, target: str) -> int:
+        """Nuova immagine e nuovo chart, stessa configurazione."""
+        old = image_ref(current) or "?"
+        if not self.ui.yes(
+            "Aggiorno SAGE?",
+            help=f"Configurazione invariata. Immagine attuale:\n{old}\nnuova:\n{target}",
+        ):
+            return 0
+        values = copy.deepcopy(current)
+        pull = self.check_image(target, current)
+        if pull:
+            values["imagePullSecrets"] = [{"name": pull}]
+        note = self.ask_note()
+        self.ui.busy("Aggiorno SAGE...")
+        for name, data, kind in self.pending_secrets:
+            self.apply_secret(name, data, kind)
+        revision = self.helm_apply(values, "aggiornamento")
+        version = RELEASE.get("version", "?")
+        self.record(
+            "aggiornamento", [f"versione {version}", f"immagine: {old} → {target}"], note, revision
+        )
+        self.ui.ok(f"SAGE aggiornato alla versione {version}")
+        if self.ui.yes("Lancio subito un giro e ne mostro il log?"):
+            return self.run_now()
+        return 0
 
     def preflight(self) -> None:
         if not shutil.which("kubectl"):
@@ -2535,7 +2578,13 @@ class Installer:
         print(f"\nLog del giro (job {job}):\n")
         cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
         subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
-        result = self.kjson("get", "job", job, ns=True).get("status", {})
+        # Il log finisce un attimo prima che il Job risulti completato: si aspetta l'esito.
+        result = {}
+        for _ in range(30):
+            result = self.kjson("get", "job", job, ns=True).get("status", {})
+            if result.get("succeeded") or result.get("failed"):
+                break
+            time.sleep(2)
         if result.get("succeeded"):
             ui.ok("giro completato")
             ui.info(

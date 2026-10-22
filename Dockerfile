@@ -44,7 +44,9 @@ RUN ansible-galaxy collection install -r ansible/requirements.yml -p /usr/share/
 
 COPY policy ./policy
 
-RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin sage
+# Home dell'utente = /tmp (nel cluster un emptyDir scrivibile, il resto è in sola lettura):
+# Ansible risolve ~ dal file passwd per i task eseguiti in locale.
+RUN useradd --uid 10001 --home-dir /tmp --no-create-home --shell /usr/sbin/nologin sage
 USER 10001
 
 ENTRYPOINT ["sage"]
