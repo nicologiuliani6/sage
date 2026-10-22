@@ -12,3 +12,5 @@ checked docker run --rm --read-only --tmpfs /tmp --entrypoint ansible sage:ci \
 # Le pagine della dashboard sono nel pacchetto installato (non solo nella repo).
 checked docker run --rm --read-only --tmpfs /tmp --entrypoint python sage:ci -c \
   "from importlib import resources; [resources.files('sage.web').joinpath(f).read_bytes() for f in ('index.html', 'app.js', 'style.css')]"
+# L'installer compilato in un eseguibile unico gira anche senza Python.
+ci/installer_bin.sh installer/sage_install.py "$TOOLS/installer-bin"

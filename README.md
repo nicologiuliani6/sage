@@ -24,9 +24,15 @@ ultimi, mai un nodo che modifica se stesso), rollback automatico, e da capo
 Da un master del cluster (serve `kubectl` con permessi di amministratore), con un solo comando:
 
 ```bash
-curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage-install.py
-python3 sage-install.py
+curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage-install
+curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage-install && ./sage-install
 ```
+
+Un eseguibile unico, senza Python sul master ([ADR-0016](docs/adr/0016-installer-eseguibile-unico.md)).
+Opzioni: `--live` (modalità reale da subito), `--allow-remove` (rimozione dei pacchetti
+inutilizzati), `--dashboard` (apre la dashboard), `--resume` (giro in corso e log del lavoro
+attuale).
 
 L'installer occupa il terminale e fa una domanda per pagina: mostra i nodi e fa scegliere quali
 gestire, propone i gruppi dai dati di Kubernetes (modificabili in una vista a colonne), crea e
