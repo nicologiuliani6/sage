@@ -189,7 +189,7 @@ def fake_run(cmd):
     if cmd[:2] == ["rpm", "-q"] and "FILECAPS" in cmd[3]:
         if cmd[-1] == "NetworkManager":
             return "-rwsr-xr-x||/usr/sbin/nm-helper\n-rwxr-xr-x||/usr/sbin/NetworkManager\n"
-        # Pacchetto senza tag FILECAPS: rpm scrive "(none)" (successo sul gemello).
+        # Pacchetto senza tag FILECAPS: rpm scrive "(none)" (comportamento reale di rpm).
         return "-rwxr-xr-x|(none)|/usr/bin/whatever\n"
     if cmd[:2] == ["rpm", "-q"]:
         return "0:1.0-1.el9\n"

@@ -1402,6 +1402,8 @@ def progress_lines(doc: dict | None) -> tuple[list[str], str | None]:
 
 # Il controllore guarda le richieste ogni 30 secondi (controller.poll_seconds).
 SCAN_START_WAIT = 90
+# Ogni quanto --resume rilegge lo stato quando non c'è un log da seguire.
+RESUME_POLL = 10
 # Dove l'eseguibile si installa come comando di sistema.
 DEFAULT_BIN = "/usr/local/bin/sage"
 
@@ -2763,20 +2765,57 @@ class Installer:
         return json.loads(gzip.decompress(base64.b64decode(blob))) if blob else None
 
     def resume_view(self) -> int:
-        """Stato del giro e log di quello che SAGE sta facendo adesso."""
-        doc = self.read_json_cm(f"{self.release}-controller")
+        """Stato del giro e log di quello che SAGE sta facendo, nodo dopo nodo.
+
+        Resta attaccato: quando un lavoro finisce passa al successivo (controllo o
+        remediation), aspettando che il pod parta. Ctrl+C esce, il lavoro continua.
+        Con --once mostra lo stato e il lavoro attuale una volta sola.
+        """
         self.ui.close()
-        lines, job = progress_lines(doc)
-        print("\n".join(lines))
-        if not job:
-            return 0
-        print(f"\nLog di {job} (Ctrl+C per uscire, il lavoro continua):\n")
         cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
+        shown, followed = None, set()
         try:
-            subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
+            while True:
+                lines, job = progress_lines(self.read_json_cm(f"{self.release}-controller"))
+                text = "\n".join(lines)
+                if text != shown:
+                    print(("\n" if shown else "") + text)
+                    shown = text
+                if job and job not in followed:
+                    followed.add(job)
+                    if self.wait_pod(job):
+                        print(f"\nLog di {job} (Ctrl+C per uscire, il lavoro continua):\n")
+                        subprocess.run(
+                            cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False
+                        )
+                    continue
+                if self.args.once:
+                    return 0
+                time.sleep(RESUME_POLL)
         except KeyboardInterrupt:
-            print()
+            print("\nUscito: il lavoro di SAGE nel cluster continua.")
         return 0
+
+    def wait_pod(self, job: str, timeout: int = 600) -> bool:
+        """Aspetta che il pod del Job sia partito (o finito). False se non parte."""
+        deadline = time.time() + timeout
+        said = False
+        while time.time() < deadline:
+            pods = self.kjson("get", "pods", "-l", f"job-name={job}", ns=True).get("items", [])
+            status = pods[0].get("status", {}) if pods else {}
+            if status.get("phase") in ("Running", "Succeeded", "Failed"):
+                return True
+            for c in status.get("containerStatuses", []):
+                reason = (c.get("state", {}).get("waiting") or {}).get("reason")
+                if reason in START_ERRORS:
+                    print(f"il pod di {job} non parte: {reason}")
+                    return False
+            if not said:
+                print(f"\n{job}: attendo che il pod parta...")
+                said = True
+            time.sleep(3)
+        print(f"il pod di {job} non è partito in {timeout // 60} minuti")
+        return False
 
     def open_dashboard(self, current: dict) -> int:
         """Port-forward verso la dashboard: resta aperto finché non si preme Ctrl+C."""
@@ -3070,9 +3109,17 @@ def parse_args(argv=None):
         "--dashboard", action="store_true", help="apre subito la dashboard (port-forward)"
     )
     p.add_argument(
+        "--once",
+        action="store_true",
+        help="con --resume: mostra lo stato e il lavoro attuale una volta sola, poi esce",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
-        help="mostra il giro in corso e segue il log di quello che SAGE sta facendo adesso",
+        help=(
+            "segue il giro: stato e log di quello che SAGE sta facendo, nodo dopo nodo, "
+            "finché non premi Ctrl+C"
+        ),
     )
     p.add_argument(
         "--bin",

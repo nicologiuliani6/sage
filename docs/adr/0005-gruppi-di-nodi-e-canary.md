@@ -22,5 +22,5 @@ Su nodi HPC il drain può interrompere job di lunga durata.
 
 ## Conseguenze
 
-- Il gemello digitale dovrebbe avere almeno un nodo per ogni gruppo della produzione.
+- Un cluster di prova dovrebbe avere almeno un nodo per ogni gruppo della produzione.
 - I master sono l'ultimo gruppo, uno alla volta, per non perdere il quorum di etcd.

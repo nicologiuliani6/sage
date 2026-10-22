@@ -5,8 +5,8 @@ Stato: accettata (2026-10-21)
 ## Contesto
 
 L'LLM locale può girare su un nodo GPU dello stesso cluster che SAGE aggiorna. Se SAGE dipende da un
-solo endpoint, aggiornando quel nodo resta senza LLM. Non è ancora noto se l'LLM sarà un'API gestita
-da CINECA o un server GPU da gestire. Per il prototipo si usa un servizio esterno (Groq).
+solo endpoint, aggiornando quel nodo resta senza LLM. L'LLM può essere un servizio gestito
+esterno, un'API interna o un server GPU da gestire: SAGE non deve dipendere da una scelta.
 
 ## Decisione
 

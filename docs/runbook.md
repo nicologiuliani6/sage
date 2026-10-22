@@ -7,7 +7,7 @@ kubectl -n <namespace> scale deploy/<release>-controller --replicas=0   # nessun
 kubectl -n <namespace> delete job -l sage.io/role=remediate      # interrompe una remediation
 ```
 
-Il `scale` vale fino al prossimo aggiornamento con Helm. Per tenerlo spento: installer, *Spegni il
+Il `scale` vale fino al prossimo aggiornamento con Helm. Per tenerlo spento: `sage`, *Spegni il
 controllore* (`suspend: true` nei valori).
 
 ## Dopo una remediation fallita
@@ -20,8 +20,7 @@ lasciato il nodo in cordon. Il controllore resta fermo: nessun altro nodo viene 
    esecuzione: riavvia sul kernel precedente (`grubby --set-default ...`) se serve.
 3. `kubectl uncordon <nodo>`
 4. Riprendi: `kubectl -n <namespace> create configmap <release>-resume`. Il controllore la
-   legge al passo successivo, la cancella e continua il giro dal nodo dopo. In alternativa, da
-   una macchina con kubeconfig: `SAGE_NAMESPACE=<namespace> SAGE_RELEASE=<release> sage resume`.
+   legge al passo successivo, la cancella e continua il giro dal nodo dopo.
 
 ## Emergenza: API Kubernetes non disponibile
 

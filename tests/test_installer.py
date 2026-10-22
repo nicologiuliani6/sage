@@ -844,7 +844,7 @@ class EndToEnd(unittest.TestCase):
                 "Europe/Rome",
                 "",  # nessun proxy
                 "",  # procedo
-                "test sul gemello",  # nota per lo storico
+                "prima installazione",  # nota per lo storico
                 "",  # primo giro subito
             ]
         )
@@ -876,7 +876,7 @@ class EndToEnd(unittest.TestCase):
             (install["action"], manual["action"]), ("installazione", "giro richiesto a mano")
         )
         self.assertEqual(install["kube_user"], "fake-admin")
-        self.assertEqual(install["note"], "test sul gemello")
+        self.assertEqual(install["note"], "prima installazione")
         self.assertEqual(install["helm_revision"], "1")
         self.assertIn("gruppo worker: w1, w2", install["changes"])
         self.assertTrue(install["user"] and install["host"] and install["time"])
@@ -1031,7 +1031,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("MODALITÀ REALE da subito (--live)", changes)
 
         # --resume senza stato del controllore: lo dice e non segue nessun log.
-        code, _ = self.run_installer([], args=("--resume",))
+        code, _ = self.run_installer([], args=("--resume", "--once"))
         self.assertEqual(code, 0)
         # --resume con una remediation in corso: segue il log di quel Job.
         state = self.read_state()
@@ -1047,13 +1047,13 @@ class EndToEnd(unittest.TestCase):
         blob = base64.b64encode(gzip.compress(json.dumps(doc).encode())).decode()
         state["configmaps"]["sage-controller"] = {"binaryData": {"data.json.gz": blob}}
         self.write_state(state)
-        code, _ = self.run_installer([], args=("--resume",))
+        code, _ = self.run_installer([], args=("--resume", "--once"))
         self.assertEqual(code, 0)
         logs = [c for c in self.read_state()["calls"] if "logs" in c]
         self.assertIn("job/sage-fix-w2-1", logs[-1])
 
         # Lancia un giro con un giro già in corso: niente attesa, si segue il lavoro attuale.
-        code, _ = self.run_installer(["5"])  # menu: lancia un giro adesso
+        code, _ = self.run_installer(["5"], args=("--once",))  # menu: lancia un giro adesso
         self.assertEqual(code, 0)
         state = self.read_state()
         self.assertIn("sage-scan-now", state["flags"])
@@ -1209,3 +1209,36 @@ class Command(unittest.TestCase):
         self.addCleanup(shutil.rmtree, installer.tmp, True)
         installer.install_command()  # niente sys.frozen: nessuna domanda, nessun comando
         self.assertFalse(self.target.exists())
+
+
+class ResumeFollow(unittest.TestCase):
+    """--resume resta attaccato: finito un nodo passa al successivo, fino a Ctrl+C."""
+
+    def test_follows_next_job_until_ctrl_c(self):
+        installer = inst.Installer(inst.parse_args(["--no-tui", "--resume"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+
+        def doc(running):
+            return {
+                "cycle": {"id": 1, "phase": "remediate", "queue": ["w1", "w2"], "results": {}},
+                "nodes": {running: {"status": "running", "job": f"fix-{running}"}},
+            }
+
+        docs = iter([doc("w1"), doc("w1"), doc("w2"), doc("w2")])
+
+        def read(name):
+            try:
+                return next(docs)
+            except StopIteration:
+                raise KeyboardInterrupt from None
+
+        followed = []
+        with (
+            mock.patch.object(installer, "read_json_cm", side_effect=read),
+            mock.patch.object(installer, "wait_pod", return_value=True),
+            mock.patch.object(inst.subprocess, "run", lambda cmd, **k: followed.append(cmd[-1])),
+            mock.patch.object(inst.time, "sleep", lambda s: None),
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(installer.resume_view(), 0)
+        self.assertEqual(followed, ["job/fix-w1", "job/fix-w2"])  # ognuno una volta sola
