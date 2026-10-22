@@ -6,13 +6,16 @@ dei nodi lascia il cluster. La verifica delle condizioni avviene in locale.
 
 from __future__ import annotations
 
+import email.utils
 import json
 import logging
 import os
 import re
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from sage.config import LlmConfig, LlmEndpoint
@@ -20,6 +23,15 @@ from sage.config import LlmConfig, LlmEndpoint
 log = logging.getLogger(__name__)
 
 PROMPT_VERSION = "1"
+
+# Limite di richieste (HTTP 429) o servizio pieno (503): si aspetta quanto chiede il servizio
+# (Retry-After) o con attese crescenti, si riprova lo stesso endpoint e si rallentano le
+# chiamate successive del giro. Nessun parametro da configurare; dopo i tentativi si passa
+# all'endpoint successivo, e senza risposta la CVE resta "nel dubbio si aggiorna".
+RETRY_CODES = (429, 503)
+MAX_RETRIES = 3
+MAX_WAIT_SECONDS = 60.0
+MAX_TOTAL_WAIT_SECONDS = 900.0
 CONDITION_TYPES = ("kernel_module", "network_service", "component_in_use")
 MITIGATION_TYPES = ("module_denylist",)
 MODULE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -128,6 +140,22 @@ Poster = Callable[[str, dict[str, Any], dict[str, str], int], dict[str, Any]]
 Getter = Callable[[str, dict[str, str], int], int]
 
 
+def retry_after(exc: urllib.error.HTTPError) -> float | None:
+    """Secondi indicati dall'intestazione Retry-After (numero o data), se c'è."""
+    value = exc.headers.get("Retry-After") if exc.headers else None
+    if not value:
+        return None
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return max((when - datetime.now(UTC)).total_seconds(), 0.0)
+
+
 def _post(url: str, body: dict[str, Any], headers: dict[str, str], timeout: int) -> dict[str, Any]:
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers=headers, method="POST"
@@ -159,6 +187,8 @@ class LlmChain:
         self._get_status = get_status
         self._sleep = sleep
         self._last_call = 0.0
+        self._interval = 0.0  # cresce dopo un 429: le chiamate successive rallentano
+        self._waited = 0.0
         self.calls = 0
 
     @property
@@ -187,28 +217,57 @@ class LlmChain:
             {"role": "user", "content": user_message(cve, package, record, severity)},
         ]
         for ep in self.cfg.endpoints:
-            wait = self.cfg.min_interval_seconds - (time.monotonic() - self._last_call)
-            if wait > 0:
-                self._sleep(wait)
-            self._last_call = time.monotonic()
             body = {
                 "model": ep.model,
                 "messages": body_messages,
                 "temperature": 0,
                 "response_format": {"type": "json_object"},
             }
-            try:
-                resp = self._post(
-                    f"{ep.base_url}/chat/completions",
-                    body,
-                    self._headers(ep),
-                    self.cfg.timeout_seconds,
-                )
-                content = resp["choices"][0]["message"]["content"]
-                return parse_response(content), ep
-            except Exception as exc:  # rete, formato, validazione: si passa al successivo
-                log.warning("LLM %s non utilizzabile per %s: %s", ep.name, cve, exc)
+            attempt = 0
+            while True:
+                self._pace()
+                try:
+                    resp = self._post(
+                        f"{ep.base_url}/chat/completions",
+                        body,
+                        self._headers(ep),
+                        self.cfg.timeout_seconds,
+                    )
+                    content = resp["choices"][0]["message"]["content"]
+                    return parse_response(content), ep
+                except urllib.error.HTTPError as exc:
+                    delay = self._backoff(exc, attempt)
+                    if delay is None:
+                        log.warning("LLM %s non utilizzabile per %s: %s", ep.name, cve, exc)
+                        break
+                    log.info("LLM %s: HTTP %s, riprovo tra %.0f s", ep.name, exc.code, delay)
+                    self._sleep(delay)
+                    self._waited += delay
+                    attempt += 1
+                except Exception as exc:  # rete, formato, validazione: si passa al successivo
+                    log.warning("LLM %s non utilizzabile per %s: %s", ep.name, cve, exc)
+                    break
         return None
+
+    def _pace(self) -> None:
+        interval = max(self.cfg.min_interval_seconds, self._interval)
+        wait = interval - (time.monotonic() - self._last_call)
+        if wait > 0:
+            self._sleep(wait)
+        self._last_call = time.monotonic()
+
+    def _backoff(self, exc: urllib.error.HTTPError, attempt: int) -> float | None:
+        """Attesa prima di riprovare, o None se non si riprova."""
+        if exc.code not in RETRY_CODES or attempt >= MAX_RETRIES:
+            return None
+        delay = retry_after(exc)
+        if delay is None:
+            delay = 2.0 * 2**attempt
+        delay = min(delay, MAX_WAIT_SECONDS)
+        if self._waited + delay > MAX_TOTAL_WAIT_SECONDS:
+            return None
+        self._interval = min(max(1.0, self._interval * 2), MAX_WAIT_SECONDS)
+        return delay
 
     def healthy(self, ep: LlmEndpoint) -> bool:
         try:

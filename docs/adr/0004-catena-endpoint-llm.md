@@ -25,3 +25,12 @@ da CINECA o un server GPU da gestire. Per il prototipo si usa un servizio estern
 
 - Preferire lo stesso modello su tutti gli endpoint (es. gpt-oss, open-weight Apache 2.0).
 - Ogni decisione registra endpoint e modello che l'hanno prodotta.
+
+## Aggiornamento (2026-10-22): limiti di richieste gestiti da SAGE
+
+Il setup non chiede più il numero di richieste al minuto: un servizio adatto a SAGE non deve
+averne bisogno, e i piani gratuiti non sono il caso d'uso. Se capita comunque un HTTP 429 (o
+503), SAGE aspetta quanto indicato da `Retry-After`, oppure 2, 4 e 8 secondi, e riprova lo stesso
+endpoint fino a tre volte. Intanto rallenta le chiamate successive del giro. Le attese sono
+limitate (60 secondi l'una, 15 minuti per giro); dopo si passa alla riserva e, senza risposta, la
+CVE resta "nel dubbio si aggiorna". `min_interval_seconds` resta disponibile per casi particolari.

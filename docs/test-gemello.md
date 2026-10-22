@@ -29,20 +29,30 @@ sha256sum -c SHA256SUMS --ignore-missing
 python3 sage-install.py
 ```
 
-L'installer chiede, nell'ordine:
+L'installer occupa tutto il terminale e fa una domanda per pagina (con `--no-tui` le fa su
+righe normali). Le pagine, nell'ordine:
 
 1. **Nodi**: frecce per muoversi, spazio per spuntare, `a` tutti, `n` nessuno, invio per
    confermare. I nodi con un OS non supportato sono visibili ma non selezionabili.
-2. **Utente SSH** (sul gemello `rocky`): crea la chiave dedicata, la installa sui nodi e controlla
-   sudo, dnf e python3. Se un nodo rifiuta l'accesso puoi riprovare, escluderlo o fermarti.
-3. **Gruppi**: proposti in automatico (worker con canary, master per ultimi con il kernel nella
-   finestra del sabato notte). Si possono spostare nodi e cambiare canary, kernel, parallelismo,
-   rimozioni e mitigazioni.
-4. **LLM**: Groq, un endpoint compatibile o nessuno. La chiave non viene mostrata e viene provata
-   subito.
+2. **Utente SSH**: propone l'utente con cui sei entrato (sul gemello `rocky`). Crea la chiave
+   dedicata, la installa sui nodi e controlla sudo, dnf e python3. Se un nodo rifiuta l'accesso
+   puoi riprovare, escluderlo o fermarti.
+3. **Gruppi**: la proposta viene da Kubernetes (ruolo control-plane: master; GPU dichiarate:
+   gpu; gli altri: worker). Invio la conferma. *Sposta i nodi tra i gruppi* apre una vista a
+   colonne, una per gruppo: frecce per muoversi, spazio sposta il nodo nella colonna accanto,
+   `c` lo segna come canary. Da *Modifica un gruppo* si cambiano ordine, kernel, finestra,
+   parallelismo, rimozioni e mitigazioni.
+4. **LLM**: URL dell'endpoint compatibile OpenAI e chiave API (non viene mostrata). L'installer
+   legge dall'endpoint l'elenco dei modelli e lo fa scegliere. Si può aggiungere una riserva.
+   I limiti di richieste (HTTP 429) li gestisce SAGE da solo: aspetta e riprova.
 5. **Frequenza**, fuso orario, eventuale proxy HTTP dei pod.
-6. **Riepilogo**: solo dopo la conferma tocca il cluster. Poi lancia un primo giro e ne mostra
-   il log.
+6. **Riepilogo** e **nota per lo storico** (facoltativa): solo dopo la conferma tocca il
+   cluster. Poi può lanciare un primo giro e mostrarne il log.
+
+Ogni modifica fatta con l'installer finisce nello **storico** (ConfigMap `sage-history`): chi,
+da quale macchina, con quale utente Kubernetes, quando, cosa è cambiato e la nota. Si consulta
+rilanciando l'installer (*Storico delle modifiche*); anche `helm history sage -n sage` riporta
+chi ha fatto ogni revisione.
 
 Una nuova installazione è sempre **in simulazione**: nessuna modifica ai nodi.
 

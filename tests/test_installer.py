@@ -33,6 +33,12 @@ inst = load(ROOT / "installer" / "sage_install.py", "sage_install")
 stamp = load(ROOT / "ci" / "stamp_installer.py", "stamp_installer")
 
 DIGEST = "sha256:" + "a" * 64
+ENDPOINT = {
+    "name": "esempio",
+    "base_url": "https://llm.example/v1",
+    "model": "m1",
+    "api_key_env": "ESEMPIO_API_KEY",
+}
 IMAGE = "registry.example/owner/sage@" + DIGEST
 
 
@@ -174,7 +180,7 @@ class Values(unittest.TestCase):
         }
         proxy = inst.proxy_env("http://proxy.example:3128", ["192.0.2.1"], "10.96.0.1")
         v = self.make(
-            base, proxy=proxy, ssh_port=2222, llm_secret=True, llm={"endpoints": [inst.GROQ]}
+            base, proxy=proxy, ssh_port=2222, llm_secret=True, llm={"endpoints": [ENDPOINT]}
         )
         self.assertFalse(v["dryRun"])  # il passaggio al vivo non si perde riconfigurando
         self.assertEqual(v["resources"], {"limits": {"memory": "2Gi"}})
@@ -193,7 +199,7 @@ class Values(unittest.TestCase):
             from sage import config
         except Exception:  # Python 3.9: il pacchetto sage richiede 3.12
             self.skipTest("pacchetto sage non importabile con questo Python")
-        v = self.make(llm={"endpoints": [inst.GROQ], "min_interval_seconds": 2.5})
+        v = self.make(llm={"endpoints": [ENDPOINT]})
         raw = dict(v["config"])
         raw["ssh"] = dict(raw["ssh"], key_path="/etc/sage/ssh/id_ed25519")
         cfg = config.parse(raw)
@@ -284,19 +290,20 @@ class Registry(unittest.TestCase):
         self.assertTrue(inst.image_access(IMAGE, fake).startswith("unknown"))
 
 
-class LlmProbe(unittest.TestCase):
-    def probe(self, fake):
+class LlmModels(unittest.TestCase):
+    def models(self, fake):
         with mock.patch.object(inst.urllib.request, "urlopen", fake):
-            return inst.llm_probe("https://llm.example/v1", "k", "m1")
+            return inst.llm_models("https://llm.example/v1", "k")
 
     def test_sends_user_agent_and_key(self):
         seen = {}
 
         def fake(req, timeout=None):
             seen.update(req.header_items())
-            return FakeResponse(json.dumps({"data": [{"id": "m1"}]}).encode())
+            body = {"data": [{"id": "m2"}, {"id": "m1"}, {"id": "m1"}, {"x": 1}]}
+            return FakeResponse(json.dumps(body).encode())
 
-        self.assertIsNone(self.probe(fake))
+        self.assertEqual(self.models(fake), (None, ["m1", "m2"]))
         # urllib normalizza i nomi: "User-agent". Senza, Cloudflare risponde 403.
         self.assertTrue(seen["User-agent"].startswith("sage-install/"))
         self.assertEqual(seen["Authorization"], "Bearer k")
@@ -307,12 +314,15 @@ class LlmProbe(unittest.TestCase):
             def fake(req, timeout=None, code=code):
                 raise http_error(code)
 
-            self.assertIn(text, self.probe(fake))
+            problem, models = self.models(fake)
+            self.assertIn(text, problem)
+            self.assertEqual(models, [])
 
-        def other_models(req, timeout=None):
-            return FakeResponse(json.dumps({"data": [{"id": "m2"}]}).encode())
-
-        self.assertIn("es. m2", self.probe(other_models))
+    def test_endpoint_names(self):
+        self.assertEqual(inst.endpoint_name("https://api.esempio.com/openai/v1", set()), "esempio")
+        self.assertEqual(inst.endpoint_name("http://192.0.2.5:8000/v1", set()), "llm")
+        self.assertEqual(inst.endpoint_name("http://vllm.lab.example:8000/v1", {"vllm"}), "vllm-2")
+        self.assertEqual(inst.endpoint_name("http://localhost:11434/v1", set()), "llm")
 
 
 class Selection(unittest.TestCase):
@@ -359,23 +369,22 @@ class Selection(unittest.TestCase):
         c = inst.Checklist(labels, set(), {})
         for _ in range(30):
             c.key("down")
-        lines = c.lines(80, 12)
-        rows = [r for r in lines if isinstance(r, tuple)]
-        self.assertEqual(len(lines), 12)
+        rows = c.rows(80, 12)
+        self.assertEqual(len(rows), 12)
         self.assertTrue(all(len(r[0]) <= 80 for r in rows))
-        current = [r[0] for r in rows if r[1]]
+        current = [r[0] for r in rows if r[1] == "current"]
         self.assertEqual(len(current), 1)
         self.assertIn("nodo-029", current[0])
-        self.assertTrue(lines[1][0].startswith("  [ ]"))  # "Tutti" è fuori dalla vista
+        self.assertTrue(rows[0][0].startswith("  [ ]"))  # "Tutti" è fuori dalla vista
 
     def test_header_shows_all(self):
         c = inst.Checklist(["a", "b"], {0, 1}, {})
-        self.assertTrue(c.lines(80, 10)[1][0].startswith("> [x] Tutti"))
+        self.assertTrue(c.rows(80, 10)[0][0].startswith("> [x] Tutti"))
         c.key("n")
-        self.assertTrue(c.lines(80, 10)[1][0].startswith("> [ ] Tutti"))
+        self.assertTrue(c.rows(80, 10)[0][0].startswith("> [ ] Tutti"))
         c.key("down")
         c.key("space")
-        self.assertTrue(c.lines(80, 10)[1][0].startswith("  [-] Tutti"))
+        self.assertTrue(c.rows(80, 10)[0][0].startswith("  [-] Tutti"))
 
     def test_menu(self):
         m = inst.Menu(["a", "b", "c"], 1)
@@ -384,6 +393,59 @@ class Selection(unittest.TestCase):
         self.assertEqual(m.cursor, 2)
         m.key("1")
         self.assertEqual(m.cursor, 0)
+
+    def test_text_input(self):
+        t = inst.TextInput("rocky", check=lambda v: None if v else "vuoto")
+        for k in ("backspace", "backspace", "left", "X", "end", "!", "space"):
+            t.key(k)
+        self.assertEqual(t.value, "roXc! ")
+        t.key("ctrl-u")
+        self.assertFalse(t.key("enter"))
+        self.assertEqual(t.message, "vuoto")
+        for k in "abc":
+            t.key(k)
+        self.assertTrue(t.key("enter"))
+        secret = inst.TextInput("", secret=True)
+        for k in "chiave":
+            secret.key(k)
+        (before, at, after), style = secret.rows(40, 3)[0]
+        self.assertEqual((before, style), ("> ••••••", "input"))
+        self.assertNotIn("chiave", before + at + after)
+
+    def test_group_board(self):
+        names = ["cp1-lab-x", "w1-lab-x", "w2-lab-x", "g1-lab-x"]
+        assignment = {
+            "cp1-lab-x": "master",
+            "w1-lab-x": "worker",
+            "w2-lab-x": "worker",
+            "g1-lab-x": "gpu",
+        }
+        b = inst.GroupBoard(["worker", "gpu", "master"], assignment, {"worker": "w1-lab-x"})
+        self.assertEqual(b.suffix, "-lab-x")
+        self.assertEqual(b.current(), "w1-lab-x")
+        b.key("space")  # w1 passa nella colonna accanto (gpu) e perde il ruolo di canary
+        self.assertEqual(b.assignment["w1-lab-x"], "gpu")
+        self.assertIsNone(b.canaries["worker"])
+        self.assertEqual(b.col, 1)
+        self.assertEqual(b.current(), "w1-lab-x")
+        b.key("left")
+        self.assertEqual(b.current(), "w2-lab-x")
+        b.key("c")
+        self.assertEqual(b.canaries["worker"], "w2-lab-x")
+        b.key("right")
+        b.key("right")
+        b.key("space")  # dall'ultima colonna si torna alla prima
+        self.assertEqual(b.assignment["cp1-lab-x"], "worker")
+        rows = b.rows(80, 10)
+        text = "".join(t for t, _ in rows[0][0])
+        self.assertIn("worker (2)", text)
+        cells = "".join(t for row in rows[2:5] if row[1] == "segments" for t, _ in row[0])
+        self.assertIn("w2-…*", cells)  # nome breve, con il canary
+        self.assertIn("> cp1-lab-x", cells)  # quello sotto il cursore per intero
+        self.assertEqual(rows[-1], ("cp1-lab-x  (gruppo worker)", "bold"))
+        self.assertTrue(b.key("enter"))
+        self.assertEqual(inst.common_suffix(["a-1", "b-1"]), "")  # troppo corto
+        self.assertEqual(inst.common_suffix(names[:1]), "")
 
 
 class RemoteCommands(unittest.TestCase):
@@ -504,7 +566,7 @@ class Interactive(unittest.TestCase):
 
     def setUp(self):
         args = inst.parse_args(["--no-tui"])
-        self.installer = inst.Installer(args, inst.UI(tui=False, color=False))
+        self.installer = inst.Installer(args, inst.LineUI(False))
         self.addCleanup(shutil.rmtree, self.installer.tmp, True)
 
     def answer(self, answers, fn, secrets=()):
@@ -522,9 +584,10 @@ class Interactive(unittest.TestCase):
         nodes = [n for n in inst.parse_nodes(CLUSTER) if not n.problem]
         groups, assignment = inst.propose_groups(nodes)
         answers = [
-            "2",
-            "1",
-            "2",  # sposta cp1 nel gruppo gpu
+            "2",  # sposta i nodi
+            "2",  # cp1 (dopo "Fatto")
+            "2",  # nel gruppo gpu (colonne: worker, gpu, master)
+            "1",  # fatto
             "3",
             "1",  # modifica il gruppo worker...
             "4",
@@ -545,48 +608,68 @@ class Interactive(unittest.TestCase):
         self.assertEqual(by["worker"].concurrency, 2)
         self.assertTrue(by["worker"].allow_remove)
 
-    def test_groq_with_backup_endpoint_in_cluster(self):
+    def llm(self, answers, secrets, models, groups=()):
+        with mock.patch.object(inst, "llm_models", side_effect=models):
+            return self.answer(
+                answers, lambda: self.installer.configure_llm({}, list(groups)), secrets
+            )
+
+    def test_endpoint_from_model_list_and_backup_in_cluster(self):
         groups = [inst.Group("worker", 1), inst.Group("gpu", 2)]
         answers = [
-            "1",  # Groq
-            "",  # modello predefinito
+            "1",  # configura un endpoint
+            "https://api.esempio.com/openai/v1/",
+            "2",  # secondo modello dell'elenco
+            "1",  # fuori dai nodi gestiti
             "s",  # aggiungo una riserva
-            "2",  # endpoint compatibile
-            "vllm-gpu",
-            "http://vllm.example:8000/v1",
-            "modello-locale",
+            "http://vllm.lab.example:8000/v1",
+            "modello-locale",  # nessun elenco: lo scrivo
             "3",  # gira su un nodo del gruppo gpu
             "n",  # niente altre riserve
         ]
-        probe = mock.patch.object(inst, "llm_probe", return_value=None)
-        with probe:
-            llm, keys = self.answer(
-                answers,
-                lambda: self.installer.configure_llm({}, groups),
-                secrets=["chiave-groq", "chiave-vllm"],
-            )
-        names = [e["name"] for e in llm["endpoints"]]
-        self.assertEqual(names, ["groq", "vllm-gpu"])
-        self.assertEqual(llm["min_interval_seconds"], inst.GROQ_MIN_INTERVAL)
-        self.assertEqual(keys, {"GROQ_API_KEY": "chiave-groq", "VLLM_GPU_API_KEY": "chiave-vllm"})
-        self.assertEqual(llm["endpoints"][1]["hosted_in_group"], "gpu")
+        llm, keys = self.llm(
+            answers, ["chiave-1", ""], [(None, ["m-a", "m-b"]), (None, [])], groups
+        )
+        first, second = llm["endpoints"]
+        self.assertEqual(
+            first,
+            {
+                "name": "esempio",
+                "base_url": "https://api.esempio.com/openai/v1",
+                "model": "m-b",
+                "api_key_env": "ESEMPIO_API_KEY",
+            },
+        )
+        self.assertEqual((second["name"], second["model"]), ("vllm", "modello-locale"))
+        self.assertNotIn("api_key_env", second)
+        self.assertEqual(second["hosted_in_group"], "gpu")
         self.assertTrue(groups[1].requires_fallback)
+        self.assertEqual(keys, {"ESEMPIO_API_KEY": "chiave-1"})
+        self.assertNotIn("min_interval_seconds", llm)  # nessun limite da impostare a mano
 
-    def test_wrong_model_can_be_changed(self):
-        problems = ["il modello openai/gpt-oss-120b non è tra quelli disponibili (es. altro)", None]
-        with mock.patch.object(inst, "llm_probe", side_effect=problems):
-            llm, keys = self.answer(
-                ["1", "", "s", "altro", "n"],
-                lambda: self.installer.configure_llm({}, []),
-                secrets=["chiave-groq"],
-            )
-        self.assertEqual(llm["endpoints"][0]["model"], "altro")
-        self.assertEqual(keys, {"GROQ_API_KEY": "chiave-groq"})
+    def test_rejected_key_can_be_replaced(self):
+        answers = ["1", "https://api.esempio.com/v1", "", "1", "1", "n"]
+        models = [("chiave rifiutata (HTTP 401)", []), (None, ["m1"])]
+        llm, keys = self.llm(answers, ["sbagliata", "giusta"], models)
+        self.assertEqual(keys, {"ESEMPIO_API_KEY": "giusta"})
+        self.assertEqual(llm["endpoints"][0]["model"], "m1")
+
+    def test_unreachable_endpoint_still_configurable(self):
+        # Es. raggiungibile dai pod ma non da qui: si scrive il modello e si prosegue.
+        answers = ["1", "http://192.0.2.9:8000/v1", "m1", "1", "n"]
+        llm, keys = self.llm(answers, [""], [("non raggiungibile da qui (timeout)", [])])
+        self.assertEqual(
+            llm["endpoints"],
+            [{"name": "llm", "base_url": "http://192.0.2.9:8000/v1", "model": "m1"}],
+        )
+        self.assertEqual(keys, {})
 
     def test_keep_current_llm(self):
-        current = {"endpoints": [dict(inst.GROQ)], "min_interval_seconds": 3}
+        current = {"endpoints": [ENDPOINT], "min_interval_seconds": 3}
         llm, keys = self.answer(["1"], lambda: self.installer.configure_llm(current, []))
-        self.assertEqual((llm, keys), ({"endpoints": [inst.GROQ]}, {}))
+        self.assertEqual((llm, keys), ({"endpoints": [ENDPOINT]}, {}))
+        llm, _ = self.answer(["3"], lambda: self.installer.configure_llm(current, []))
+        self.assertEqual(llm, {"endpoints": []})
 
     def test_custom_schedule(self):
         cron = self.answer(["4", "15 2 * * *"], lambda: self.installer.choose_schedule(None))
@@ -626,6 +709,7 @@ class EndToEnd(unittest.TestCase):
                 },
                 "labels": {"cp1": {"node-role.kubernetes.io/control-plane": ""}},
                 "secrets": {},
+                "configmaps": {},
                 "namespace": None,
                 "helm": None,
                 "jobs": [],
@@ -642,6 +726,13 @@ class EndToEnd(unittest.TestCase):
         access = mock.patch.object(inst, "image_access", return_value="public")
         access.start()
         self.addCleanup(access.stop)
+        cwd = os.getcwd()
+        os.chdir(self.tmp)  # la disinstallazione salva qui lo storico
+        self.addCleanup(os.chdir, cwd)
+
+    def history(self):
+        cm = self.read_state()["configmaps"]["sage-history"]
+        return inst.parse_history(cm["data"][inst.HISTORY_KEY])
 
     def write_state(self, state):
         self.state.write_text(json.dumps(state))
@@ -672,12 +763,13 @@ class EndToEnd(unittest.TestCase):
                 "admin",  # utente SSH
                 "2",  # w3 non accetta le credenziali: escludilo
                 "",  # gruppi: vanno bene
-                "3",  # nessun LLM
+                "2",  # nessun LLM
                 "",  # ogni 6 ore
                 "Europe/Rome",
                 "",  # nessun proxy
                 "",  # giri automatici attivi
                 "",  # procedo
+                "test sul gemello",  # nota per lo storico
                 "",  # primo giro subito
             ]
         )
@@ -690,6 +782,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(values["config"]["ssh"]["user"], "admin")
         self.assertEqual(values["timeZone"], "Europe/Rome")
         self.assertEqual([g["name"] for g in values["config"]["groups"]], ["worker", "master"])
+        self.assertIn("fake-admin", state["helm"]["description"])
         labels = {n: lab.get("sage.io/group") for n, lab in state["labels"].items()}
         self.assertEqual(labels, {"cp1": "master", "w1": "worker", "w2": "worker"})
         ssh_secret = state["secrets"]["sage-ssh"]["data"]
@@ -700,24 +793,60 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(len(state["jobs"]), 1)
         keys = (self.tmp / "homes" / "192.0.2.11" / ".ssh" / "authorized_keys").read_text()
         self.assertIn("sage@sage", keys)
+        install, manual = self.history()
+        self.assertEqual((install["action"], manual["action"]), ("installazione", "giro manuale"))
+        self.assertEqual(install["kube_user"], "fake-admin")
+        self.assertEqual(install["note"], "test sul gemello")
+        self.assertEqual(install["helm_revision"], "1")
+        self.assertIn("gruppo worker: w1, w2", install["changes"])
+        self.assertTrue(install["user"] and install["host"] and install["time"])
 
-        # Riconfigurazione: valori attuali come default, stessa chiave.
-        # menu, nodi, utente, gruppi, nessun LLM, frequenza, fuso, proxy, procedo, niente giro
-        code, prompts = self.run_installer(["1", "", "", "", "3", "", "", "", "", "n"])
+        # Riconfigurazione: valori attuali come default, stessa chiave, w2 passa ai master.
+        code, prompts = self.run_installer(
+            [
+                "1",  # menu: riconfigura
+                "",  # nodi
+                "",  # utente
+                "2",  # sposta i nodi
+                "4",  # w2 (dopo "Fatto", cp1, w1)
+                "2",  # nel gruppo master
+                "1",  # fatto
+                "",  # gruppi: vanno bene
+                "2",  # nessun LLM
+                "",  # frequenza
+                "",  # fuso
+                "",  # proxy
+                "",  # procedo
+                "",  # nessuna nota
+                "n",  # niente giro
+            ]
+        )
         self.assertEqual(code, 0, prompts)
         state = self.read_state()
         self.assertEqual(
             state["secrets"]["sage-ssh"]["data"]["id_ed25519"], ssh_secret["id_ed25519"]
         )
         self.assertTrue(state["helm"]["values"]["dryRun"])
+        self.assertEqual(state["labels"]["w2"]["sage.io/group"], "master")
+        reconf = self.history()[-1]
+        self.assertEqual(reconf["action"], "riconfigurazione")
+        self.assertIn("nodo w2: dal gruppo worker al gruppo master", reconf["changes"])
+        self.assertNotIn("note", reconf)
 
         # Passaggio al vivo, con conferma esplicita.
-        code, _ = self.run_installer(["2", "s"])
+        code, _ = self.run_installer(["2", "s", "canary controllato"])
         self.assertEqual(code, 0)
         self.assertFalse(self.read_state()["helm"]["values"]["dryRun"])
+        live = self.history()[-1]
+        self.assertEqual(live["changes"], ["dryRun: true → false"])
+        self.assertEqual(live["note"], "canary controllato")
 
-        # Disinstallazione: chiave tolta dai nodi, etichette rimosse, namespace eliminato.
-        code, _ = self.run_installer(["5", "s", ""])
+        # Storico dal menu: voce più recente, dettagli, indietro, esci.
+        code, _ = self.run_installer(["5", "2", "1", "1", "7"])
+        self.assertEqual(code, 0)
+
+        # Disinstallazione: chiave tolta dai nodi, etichette rimosse, storico salvato.
+        code, _ = self.run_installer(["6", "s", "", ""])
         self.assertEqual(code, 0)
         state = self.read_state()
         self.assertIsNone(state["helm"])
@@ -725,10 +854,19 @@ class EndToEnd(unittest.TestCase):
         keys = (self.tmp / "homes" / "192.0.2.11" / ".ssh" / "authorized_keys").read_text()
         self.assertNotIn("sage@sage", keys)
         self.assertIn(["namespace", "sage", "--wait=false"], state["deleted"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        saved = list(self.tmp.glob("sage-storico-sage-*.jsonl"))
+        self.assertEqual(len(saved), 1)
+        actions = [e["action"] for e in inst.parse_history(saved[0].read_text())]
+        self.assertEqual(
+            actions,
+            [
+                "installazione",
+                "giro manuale",
+                "riconfigurazione",
+                "passaggio al vivo",
+                "disinstallazione",
+            ],
+        )
 
 
 @unittest.skipUnless(hasattr(os, "openpty") and sys.platform.startswith("linux"), "serve un pty")
@@ -741,7 +879,7 @@ class Terminal(unittest.TestCase):
 
         program = (
             f"import sys; sys.path.insert(0, {str(ROOT / 'installer')!r}); "
-            "import sage_install as s; ui = s.UI(tui=True, color=False); " + code
+            "import sage_install as s; ui = s.ScreenUI(False); " + code
         )
         pid, fd = pty.fork()
         if pid == 0:
@@ -767,7 +905,7 @@ class Terminal(unittest.TestCase):
     def test_checklist_with_keys(self):
         code = (
             "r = ui.checklist('Nodi:', ['a', 'b', 'c'], ['a', 'b', 'c'], {0, 1, 2}, {}); "
-            "print('RISULTATO', sorted(r))"
+            "ui.close(); print('RISULTATO', sorted(r))"
         )
         # "Tutti" toglie tutto, giù di due, spazio su "b", invio.
         out = self.run_tui(code, [b" ", b"\x1b[B", b"\x1b[B", b" ", b"\r"])
@@ -775,6 +913,23 @@ class Terminal(unittest.TestCase):
         self.assertIn("[x] Tutti", out)
 
     def test_menu_with_keys(self):
-        code = "print('RISULTATO', ui.choose('Scelta:', ['uno', 'due', 'tre']))"
+        code = "r = ui.choose('Scelta:', ['uno', 'due', 'tre']); ui.close(); print('RISULTATO', r)"
         out = self.run_tui(code, [b"\x1b[B", b"\x1b[B", b"\x1b[A", b"\r"])
         self.assertIn("RISULTATO 1", out)
+
+    def test_pages_with_text_and_secret(self):
+        code = (
+            "ui.step(2, 6, 'Accesso SSH'); v = ui.ask('Utente', 'rocky', help='aiuto'); "
+            "k = ui.secret('Chiave'); ui.close(); print('RISULTATO', v, k)"
+        )
+        keys = [b"\x7f" * 5, "àdmin".encode(), b"\r", b"segreto\r"]
+        out = self.run_tui(code, keys)
+        self.assertIn("RISULTATO àdmin segreto", out)
+        screen = out.split("RISULTATO")[0]
+        self.assertIn("Passo 2 di 6: Accesso SSH", screen)
+        self.assertIn("\x1b[?1049h", screen)  # schermo intero
+        self.assertNotIn("segreto", screen)  # la chiave non compare mai
+
+
+if __name__ == "__main__":
+    unittest.main()

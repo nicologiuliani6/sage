@@ -1,4 +1,6 @@
 import json
+import urllib.error
+from email.message import Message
 
 import pytest
 
@@ -148,3 +150,73 @@ def test_no_endpoints_means_no_budget():
     ).llm
     chain = llm.LlmChain(cfg, env={})
     assert not chain.budget_left() and chain.primary is None
+
+
+def http_error(code, retry_after=None):
+    headers = Message()
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    return urllib.error.HTTPError("http://x", code, "err", headers, None)
+
+
+def flaky(errors):
+    """post finto: solleva gli errori in ordine, poi risponde bene."""
+    calls = []
+
+    def post(url, body, headers, timeout):
+        calls.append(url)
+        if errors:
+            raise errors.pop(0)
+        return answer(GOOD)
+
+    return post, calls
+
+
+def test_rate_limit_waits_retry_after_and_retries_same_endpoint():
+    slept = []
+    post, calls = flaky([http_error(429, "7")])
+    chain = llm.LlmChain(chain_cfg(), env={}, post=post, sleep=slept.append)
+    result, ep = chain.ask("CVE-1", "p", None, "")
+    assert ep.name == "locale" and calls == ["http://locale/v1/chat/completions"] * 2
+    assert 7 in slept
+    assert chain.calls == 1  # i tentativi non consumano il budget
+
+
+def test_rate_limit_backoff_then_next_endpoint():
+    slept = []
+    post, calls = flaky([http_error(503)] * 4)
+    chain = llm.LlmChain(chain_cfg(), env={}, post=post, sleep=slept.append)
+    _, ep = chain.ask("CVE-1", "p", None, "")
+    assert ep.name == "groq"  # dopo 3 nuovi tentativi si passa alla riserva
+    assert [s for s in slept if s >= 2][:3] == [2.0, 4.0, 8.0]
+    assert calls.count("http://locale/v1/chat/completions") == 4
+
+
+def test_rate_limit_slows_down_following_calls():
+    slept = []
+    post, _ = flaky([http_error(429, "0")])
+    chain = llm.LlmChain(chain_cfg(), env={}, post=post, sleep=slept.append)
+    chain.ask("CVE-1", "p", None, "")
+    slept.clear()
+    chain.ask("CVE-2", "p", None, "")
+    assert slept and slept[0] > 0  # pausa tra le chiamate anche senza min_interval
+
+
+def test_other_http_errors_are_not_retried_and_wait_is_capped():
+    slept = []
+    post, calls = flaky([http_error(500)])
+    chain = llm.LlmChain(chain_cfg(), env={}, post=post, sleep=slept.append)
+    _, ep = chain.ask("CVE-1", "p", None, "")
+    assert ep.name == "groq" and not slept
+    post, calls = flaky([http_error(429, "3600")])
+    chain = llm.LlmChain(chain_cfg(), env={}, post=post, sleep=slept.append)
+    chain._waited = llm.MAX_TOTAL_WAIT_SECONDS - 10
+    _, ep = chain.ask("CVE-1", "p", None, "")
+    assert ep.name == "groq"  # niente attesa oltre il tetto del giro
+
+
+def test_retry_after_formats():
+    assert llm.retry_after(http_error(429, "2.5")) == 2.5
+    assert llm.retry_after(http_error(429, "Wed, 21 Oct 2015 07:28:00 GMT")) == 0.0
+    assert llm.retry_after(http_error(429, "boh")) is None
+    assert llm.retry_after(http_error(429)) is None

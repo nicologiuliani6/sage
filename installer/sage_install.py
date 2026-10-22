@@ -18,6 +18,7 @@ import argparse
 import base64
 import concurrent.futures
 import copy
+import datetime
 import getpass
 import hashlib
 import io
@@ -28,10 +29,12 @@ import re
 import select
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import time
 import urllib.error
 import urllib.parse
@@ -79,13 +82,26 @@ DEFAULT_POLICY = {
         "xt_*",
     ],
 }
-GROQ = {
-    "name": "groq",
-    "base_url": "https://api.groq.com/openai/v1",
-    "model": "openai/gpt-oss-120b",
-    "api_key_env": "GROQ_API_KEY",
+# Storico delle modifiche fatte con l'installer: ConfigMap <release>-history.
+HISTORY_KEY = "history.jsonl"
+HISTORY_MAX = 1000
+GENERIC_HOST_PARTS = {
+    "api",
+    "www",
+    "com",
+    "org",
+    "net",
+    "io",
+    "ai",
+    "it",
+    "eu",
+    "dev",
+    "app",
+    "cloud",
+    "local",
+    "internal",
+    "localhost",
 }
-GROQ_MIN_INTERVAL = 2.5  # piano gratuito: poche richieste al minuto
 SCHEDULES = [
     ("ogni 6 ore", "0 */6 * * *"),
     ("ogni 12 ore", "0 */12 * * *"),
@@ -563,13 +579,43 @@ def _fit(text: str, width: int) -> str:
     return text if len(text) < width else text[: max(width - 2, 1)] + "…"
 
 
-class Checklist:
-    """Lista con caselle: frecce per muoversi, spazio per spuntare, invio per confermare.
+def wrap(text: str, width: int) -> list[str]:
+    """A capo sulle parole; righe vuote e rientri iniziali restano."""
+    out = []
+    for para in text.split("\n"):
+        indent = " " * (len(para) - len(para.lstrip(" ")))
+        out.extend(
+            textwrap.wrap(
+                para,
+                max(width, 10),
+                subsequent_indent=indent,
+                break_on_hyphens=False,
+                break_long_words=True,
+            )
+            or [""]
+        )
+    return out
 
-    La riga 0 è "Tutti". Logica separata dal terminale, così si può provare.
+
+def _scroll(cursor: int, top: int, visible: int) -> int:
+    if cursor < top:
+        return cursor
+    if cursor >= top + visible:
+        return cursor - visible + 1
+    return top
+
+
+# Widget: logica separata dal terminale, così si prova con i tasti scritti nei test.
+# key(tasto) -> True quando la risposta è confermata; rows() -> righe (testo, stile).
+
+
+class Checklist:
+    """Caselle: frecce per muoversi, spazio per spuntare, invio per confermare.
+
+    La riga 0 è "Tutti".
     """
 
-    HELP = "frecce: muovi  spazio: seleziona  a: tutti  n: nessuno  invio: conferma"
+    FOOTER = "frecce: muovi   spazio: seleziona   a: tutti   n: nessuno   invio: conferma"
 
     def __init__(self, labels, selected, disabled, all_label="Tutti", minimum=1):
         self.labels = list(labels)
@@ -589,8 +635,8 @@ class Checklist:
         return bool(self.enabled) and self.selected >= self.enabled
 
     def key(self, k: str) -> bool:
-        """Applica un tasto. True quando la scelta è confermata."""
         self.message = ""
+        k = k.lower() if len(k) == 1 else k
         rows = len(self.labels) + 1
         if k in ("up", "k"):
             self.cursor = (self.cursor - 1) % rows
@@ -620,33 +666,34 @@ class Checklist:
             return True
         return False
 
-    def lines(self, width: int, height: int) -> list[str]:
+    def rows(self, width: int, height: int) -> list:
         mark = "x" if self.all_on() else ("-" if self.selected else " ")
-        head = f"[{mark}] {self.all_label} ({len(self.selected)} scelti)"
-        rows = [(self.cursor == 0, head, False)]
+        items = [(f"[{mark}] {self.all_label} ({len(self.selected)} scelti)", False)]
         for i, text in enumerate(self.labels):
             box = "x" if i in self.selected else " "
             extra = f"  ({self.disabled[i]})" if i in self.disabled else ""
-            rows.append((self.cursor == i + 1, f"[{box}] {text}{extra}", i in self.disabled))
-        visible = max(height - 2, 3)
-        if self.cursor < self.top:
-            self.top = self.cursor
-        elif self.cursor >= self.top + visible:
-            self.top = self.cursor - visible + 1
-        out = [_fit(self.HELP, width)]
-        for current, text, dim in rows[self.top : self.top + visible]:
-            out.append((_fit(("> " if current else "  ") + text, width), current, dim))
-        out.append(_fit(self.message, width))
+            items.append((f"[{box}] {text}{extra}", i in self.disabled))
+        visible = max(height, 3)
+        self.top = _scroll(self.cursor, self.top, visible)
+        out = []
+        for i in range(self.top, min(self.top + visible, len(items))):
+            text, dim = items[i]
+            current = i == self.cursor
+            style = "current" if current else ("dim" if dim else "")
+            out.append((_fit(("> " if current else "  ") + text, width), style))
         return out
 
 
 class Menu:
-    """Scelta singola con le frecce."""
+    """Scelta singola con le frecce (o il numero della voce)."""
+
+    FOOTER = "frecce: muovi   invio: conferma"
 
     def __init__(self, options, default=0):
         self.options = list(options)
         self.cursor = default
         self.top = 0
+        self.message = ""
 
     def key(self, k: str) -> bool:
         if k in ("up", "k"):
@@ -659,20 +706,185 @@ class Menu:
             return True
         return False
 
-    def lines(self, width: int, height: int) -> list:
-        visible = max(height - 1, 3)
-        if self.cursor < self.top:
-            self.top = self.cursor
-        elif self.cursor >= self.top + visible:
-            self.top = self.cursor - visible + 1
+    def rows(self, width: int, height: int) -> list:
+        visible = max(height, 3)
+        self.top = _scroll(self.cursor, self.top, visible)
         out = []
         for i in range(self.top, min(self.top + visible, len(self.options))):
             current = i == self.cursor
-            out.append((_fit(("> " if current else "  ") + self.options[i], width), current, False))
+            text = ("> " if current else "  ") + self.options[i]
+            out.append((_fit(text, width), "current" if current else ""))
         return out
 
 
+class TextInput:
+    """Campo di testo su una riga, con il valore predefinito già scritto."""
+
+    FOOTER = "invio: conferma   frecce: sposta il cursore   ctrl-u: cancella tutto"
+
+    def __init__(self, default: str = "", secret: bool = False, check=None):
+        self.value = default or ""
+        self.pos = len(self.value)
+        self.secret = secret
+        self.check = check
+        self.message = ""
+
+    def key(self, k: str) -> bool:
+        self.message = ""
+        if k == "enter":
+            problem = self.check(self.value.strip()) if self.check else None
+            if problem:
+                self.message = problem
+                return False
+            return True
+        if k == "backspace":
+            if self.pos:
+                self.value = self.value[: self.pos - 1] + self.value[self.pos :]
+                self.pos -= 1
+        elif k == "delete":
+            self.value = self.value[: self.pos] + self.value[self.pos + 1 :]
+        elif k == "left":
+            self.pos = max(self.pos - 1, 0)
+        elif k == "right":
+            self.pos = min(self.pos + 1, len(self.value))
+        elif k == "home":
+            self.pos = 0
+        elif k == "end":
+            self.pos = len(self.value)
+        elif k == "ctrl-u":
+            self.value, self.pos = "", 0
+        else:
+            char = " " if k == "space" else k
+            if len(char) == 1 and char.isprintable():
+                self.value = self.value[: self.pos] + char + self.value[self.pos :]
+                self.pos += 1
+        return False
+
+    def rows(self, width: int, height: int) -> list:
+        shown = "•" * len(self.value) if self.secret else self.value
+        room = max(width - 4, 10)
+        start = max(0, self.pos - room + 1)
+        visible = shown[start : start + room]
+        cursor = self.pos - start
+        before, at, after = (
+            visible[:cursor],
+            visible[cursor : cursor + 1] or " ",
+            visible[cursor + 1 :],
+        )
+        return [(("> " + before, at, after), "input")]
+
+
+def common_suffix(names: list[str]) -> str:
+    """Parte finale comune ai nomi, da un separatore in poi (es. "-cluster-x")."""
+    if len(names) < 2:
+        return ""
+    rev = [n[::-1] for n in names]
+    common = os.path.commonprefix(rev)[::-1]
+    cut = min((common.find(c) for c in "-." if c in common), default=-1)
+    suffix = common[cut:] if cut >= 0 else ""
+    if len(suffix) < 4 or any(len(n) <= len(suffix) for n in names):
+        return ""
+    return suffix
+
+
+class GroupBoard:
+    """Gruppi in colonne: frecce per muoversi, spazio sposta il nodo nella colonna accanto."""
+
+    FOOTER = "frecce: muovi   spazio: sposta nella colonna accanto   c: canary   invio: conferma"
+
+    def __init__(self, groups: list[str], assignment: dict, canaries: dict):
+        self.groups = list(groups)
+        self.assignment = dict(assignment)
+        self.canaries = dict(canaries)
+        self.suffix = common_suffix(list(assignment))
+        self.col = 0
+        self.row = 0
+        self.message = ""
+
+    def column(self, i: int) -> list[str]:
+        return sorted(n for n, g in self.assignment.items() if g == self.groups[i])
+
+    def current(self):
+        nodes = self.column(self.col)
+        return nodes[self.row] if nodes else None
+
+    def key(self, k: str) -> bool:
+        self.message = ""
+        k = k.lower() if len(k) == 1 else k
+        count = len(self.groups)
+        if k in ("left", "h"):
+            self.col = (self.col - 1) % count
+        elif k in ("right", "l", "tab"):
+            self.col = (self.col + 1) % count
+        elif k in ("up", "k"):
+            self.row -= 1
+        elif k in ("down", "j"):
+            self.row += 1
+        elif k in ("space", "x"):
+            node = self.current()
+            if node:
+                old = self.groups[self.col]
+                if self.canaries.get(old) == node:
+                    self.canaries[old] = None
+                self.col = (self.col + 1) % count
+                self.assignment[node] = self.groups[self.col]
+                self.row = self.column(self.col).index(node)
+        elif k == "c":
+            node = self.current()
+            group = self.groups[self.col]
+            if node:
+                self.canaries[group] = None if self.canaries.get(group) == node else node
+        elif k == "enter":
+            return True
+        size = len(self.column(self.col))
+        self.row = max(0, min(self.row, size - 1))
+        return False
+
+    def short(self, name: str) -> str:
+        return name[: -len(self.suffix)] + "-…" if self.suffix else name
+
+    def rows(self, width: int, height: int) -> list:
+        count = len(self.groups)
+        cell = max((width - 3 * (count - 1)) // count, 8)
+        heads = []
+        for i, g in enumerate(self.groups):
+            heads.append((_fit(f"{g} ({len(self.column(i))})", cell + 1).ljust(cell), "bold"))
+        out = [self._join(heads), self._join([("─" * cell, "dim")] * count)]
+        columns = [self.column(i) for i in range(count)]
+        depth = max([len(c) for c in columns] + [1])
+        for r in range(min(depth, max(height - 2, 1))):
+            cells = []
+            for i, nodes in enumerate(columns):
+                if r < len(nodes):
+                    node = nodes[r]
+                    mark = "*" if self.canaries.get(self.groups[i]) == node else " "
+                    current = i == self.col and r == self.row
+                    # Nome breve; quello sotto il cursore per intero.
+                    name = node if current else self.short(node)
+                    text = _fit(("> " if current else "  ") + name + mark, cell + 1)
+                    cells.append((text.ljust(cell), "current" if current else ""))
+                else:
+                    cells.append((" " * cell, ""))
+            out.append(self._join(cells))
+        node = self.current()
+        if node:
+            group = self.groups[self.col]
+            out.append(("", ""))
+            out.append((_fit(f"{node}  (gruppo {group})", width), "bold"))
+        return out
+
+    @staticmethod
+    def _join(cells: list) -> tuple:
+        parts = []
+        for i, cell in enumerate(cells):
+            if i:
+                parts.append(("   ", ""))
+            parts.append(cell)
+        return (parts, "segments")
+
+
 def read_key(fd: int) -> str:
+    """Un tasto: nome ("up", "enter", ...) oppure il carattere, maiuscole comprese."""
     data = os.read(fd, 1)
     if data == b"\x1b":
         if not select.select([fd], [], [], 0.05)[0]:
@@ -681,34 +893,68 @@ def read_key(fd: int) -> str:
         if second not in (b"[", b"O"):
             return ""
         third = os.read(fd, 1)
-        if third.isdigit():  # es. ESC [ 5 ~
-            while os.read(fd, 1) not in (b"~", b""):
-                pass
-            return ""
-        return {b"A": "up", b"B": "down", b"H": "home", b"F": "end"}.get(third, "")
-    if data in (b"\r", b"\n"):
-        return "enter"
-    if data == b" ":
-        return "space"
-    if data == b"\t":
-        return "tab"
+        if third.isdigit():  # es. ESC [ 3 ~
+            seq = third
+            while True:
+                more = os.read(fd, 1)
+                if more in (b"~", b""):
+                    break
+                seq += more
+            return {b"1": "home", b"7": "home", b"3": "delete", b"4": "end", b"8": "end"}.get(
+                seq, ""
+            )
+        arrows = {b"A": "up", b"B": "down", b"C": "right", b"D": "left", b"H": "home", b"F": "end"}
+        return arrows.get(third, "")
+    named = {
+        b"\r": "enter",
+        b"\n": "enter",
+        b" ": "space",
+        b"\t": "tab",
+        b"\x7f": "backspace",
+        b"\x08": "backspace",
+        b"\x15": "ctrl-u",
+        b"\x01": "home",
+        b"\x05": "end",
+    }
+    if data in named:
+        return named[data]
     if data == b"\x03":
         raise KeyboardInterrupt
     if data in (b"\x04", b""):
         raise EOFError
-    return data.decode(errors="ignore").lower()
+    first = data[0]
+    extra = 1 if 0xC0 <= first < 0xE0 else 2 if 0xE0 <= first < 0xF0 else 3 if first >= 0xF0 else 0
+    while extra:
+        more = os.read(fd, extra)
+        if not more:
+            break
+        data += more
+        extra -= len(more)
+    text = data.decode(errors="ignore")
+    return text if text.isprintable() else ""
 
 
-class UI:
-    def __init__(self, tui: bool, color: bool):
-        self.tui = tui
+class LineUI:
+    """Domande su righe successive: terminali non interattivi e --no-tui."""
+
+    tui = False
+
+    def __init__(self, color: bool):
         self.color = color
+        self.context = ""
 
     def _c(self, code: str, text: str) -> str:
         return f"\x1b[{code}m{text}\x1b[0m" if self.color else text
 
-    def title(self, text: str) -> None:
-        print("\n" + self._c("1", text))
+    def header(self, text: str) -> None:
+        print(self._c("1", text))
+
+    def cluster(self, text: str) -> None:
+        self.context = text
+        print(f"Cluster: {text}")
+
+    def step(self, number: int, total: int, name: str) -> None:
+        print("\n" + self._c("1", f"{number}/{total}. {name}"))
 
     def info(self, text: str = "") -> None:
         print(text)
@@ -722,7 +968,18 @@ class UI:
     def error(self, text: str) -> None:
         print(self._c("31", "errore: ") + text, file=sys.stderr)
 
-    def ask(self, prompt: str, default: str | None = None, check=None) -> str:
+    def busy(self, text: str) -> None:
+        print(text)
+
+    def close(self) -> None:
+        pass
+
+    def _help(self, help: str | None) -> None:
+        if help:
+            print(help)
+
+    def ask(self, prompt: str, default: str | None = None, check=None, help=None) -> str:
+        self._help(help)
         suffix = f" [{default}]" if default not in (None, "") else ""
         while True:
             answer = input(f"{prompt}{suffix}: ").strip()
@@ -733,13 +990,14 @@ class UI:
                 return answer
             self.warn(problem)
 
-    def ask_int(self, prompt: str, default: int, minimum: int = 1) -> int:
+    def ask_int(self, prompt: str, default: int, minimum: int = 1, help=None) -> int:
         def check(v):
             return None if v.isdigit() and int(v) >= minimum else f"un intero >= {minimum}"
 
-        return int(self.ask(prompt, str(default), check))
+        return int(self.ask(prompt, str(default), check, help))
 
-    def yes(self, prompt: str, default: bool = True) -> bool:
+    def yes(self, prompt: str, default: bool = True, help=None) -> bool:
+        self._help(help)
         hint = "S/n" if default else "s/N"
         while True:
             answer = input(f"{prompt} [{hint}]: ").strip().lower()
@@ -750,56 +1008,13 @@ class UI:
             if answer in ("n", "no"):
                 return False
 
-    def secret(self, prompt: str) -> str:
+    def secret(self, prompt: str, help=None) -> str:
+        self._help(help)
         return getpass.getpass(f"{prompt} (non viene mostrata): ").strip()
 
-    def _loop(self, widget) -> None:
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        out = sys.stdout
-        drawn = 0
-        out.write("\x1b[?25l")
-        try:
-            tty.setcbreak(fd)
-            while True:
-                size = shutil.get_terminal_size()
-                # Alcuni terminali (es. pty senza dimensioni) riportano 0x0.
-                columns, height = size.columns or 80, size.lines or 24
-                rows = widget.lines(columns, max(height - 4, 5))
-                if drawn:
-                    out.write(f"\r\x1b[{drawn}A")
-                for row in rows:
-                    if isinstance(row, tuple):
-                        text, current, dim = row
-                        if dim:
-                            text = self._c("2", text)
-                        elif current:
-                            text = self._c("1;36", text)
-                    else:
-                        text = row
-                    out.write("\x1b[2K" + text + "\n")
-                for _ in range(drawn - len(rows)):
-                    out.write("\x1b[2K\n")
-                if drawn > len(rows):
-                    out.write(f"\r\x1b[{drawn - len(rows)}A")
-                drawn = len(rows)
-                out.flush()
-                if widget.key(read_key(fd)):
-                    break
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            out.write("\x1b[?25h")
-            out.flush()
-
-    def choose(self, title: str, options: list[str], default: int = 0) -> int:
+    def choose(self, title: str, options: list[str], default: int = 0, help=None) -> int:
+        self._help(help)
         print(self._c("1", title))
-        if self.tui:
-            menu = Menu(options, default)
-            self._loop(menu)
-            return menu.cursor
         for i, text in enumerate(options, start=1):
             print(f"  {i}. {text}")
 
@@ -808,12 +1023,9 @@ class UI:
 
         return int(self.ask("Scelta", str(default + 1), check)) - 1
 
-    def checklist(self, title, keys, labels, selected, disabled, minimum=1) -> set[int]:
+    def checklist(self, title, keys, labels, selected, disabled, minimum=1, help=None) -> set:
+        self._help(help)
         print(self._c("1", title))
-        if self.tui:
-            widget = Checklist(labels, selected, disabled, minimum=minimum)
-            self._loop(widget)
-            return widget.selected
         for i, text in enumerate(labels, start=1):
             mark = "x" if i - 1 in selected else " "
             extra = f"  ({disabled[i - 1]})" if i - 1 in disabled else ""
@@ -832,14 +1044,219 @@ class UI:
                 return chosen
             self.warn(f"seleziona almeno {minimum} voce")
 
+    def board(self, title, groups, assignment, canaries, help=None):
+        """Senza schermo intero: un nodo alla volta, scegliendo il gruppo."""
+        assignment, canaries = dict(assignment), dict(canaries)
+        while True:
+            nodes = sorted(assignment)
+            labels = [f"{n}  (in {assignment[n]})" for n in nodes]
+            pick = self.choose(title, ["Fatto"] + labels, 0, help)
+            if pick == 0:
+                return assignment, canaries
+            node = nodes[pick - 1]
+            old = assignment[node]
+            target = self.choose(f"In quale gruppo va {node}?", groups, groups.index(old))
+            if canaries.get(old) == node:
+                canaries[old] = None
+            assignment[node] = groups[target]
+
+
+class ScreenUI(LineUI):
+    """Installer a schermo intero: una domanda per pagina.
+
+    Usa lo schermo alternativo del terminale; alla chiusura torna a quello normale e
+    ristampa i messaggi, così quello che è successo resta visibile.
+    """
+
+    tui = True
+    NOTES = 6
+
+    def __init__(self, color: bool):
+        super().__init__(color)
+        self.title = "SAGE"
+        self.step_info = None
+        self.notes: list = []
+        self.transcript: list = []
+        self.active = False
+        self.fd = None
+        self.saved = None
+        self.busy_text = None
+
+    # --- terminale
+    def start(self) -> None:
+        if self.active:
+            return
+        import termios
+        import tty
+
+        self.fd = sys.stdin.fileno()
+        self.saved = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        sys.stdout.flush()
+        self.active = True
+
+    def close(self) -> None:
+        if not self.active:
+            return
+        import termios
+
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
+        self.active = False
+        for kind, text in self.transcript:
+            self._emit(kind, text)
+        self.transcript = []
+
+    # --- messaggi
+    def _emit(self, kind: str, text: str) -> None:
+        {"ok": LineUI.ok, "warn": LineUI.warn, "info": LineUI.info}[kind](self, text)
+
+    def _note(self, kind: str, text: str) -> None:
+        if not self.active:
+            self._emit(kind, text)
+            return
+        self.notes.append((kind, text))
+        self.transcript.append((kind, text))
+        if self.busy_text:
+            self._render(self.busy_text, None, None)
+
+    def header(self, text: str) -> None:
+        self.title = text
+
+    def cluster(self, text: str) -> None:
+        self.context = text
+
+    def step(self, number: int, total: int, name: str) -> None:
+        self.step_info = (number, total, name)
+        self.notes = []
+
+    def info(self, text: str = "") -> None:
+        self._note("info", text)
+
+    def ok(self, text: str) -> None:
+        self._note("ok", text)
+
+    def warn(self, text: str) -> None:
+        self._note("warn", text)
+
+    def error(self, text: str) -> None:
+        self.close()
+        super().error(text)
+
+    def busy(self, text: str) -> None:
+        self.start()
+        self.busy_text = text
+        self._render(text, None, None)
+
+    # --- disegno
+    def _size(self) -> tuple[int, int]:
+        size = shutil.get_terminal_size()
+        # Alcuni terminali (es. pty senza dimensioni) riportano 0x0.
+        return max(size.columns or 80, 40), max(size.lines or 24, 12)
+
+    def _style(self, text: str, style: str) -> str:
+        codes = {"current": "1;36", "dim": "2", "bold": "1"}
+        return self._c(codes[style], text) if style in codes else text
+
+    def _row(self, row, width: int) -> str:
+        content, style = row
+        if style == "segments":
+            return "  " + "".join(self._style(text, s) for text, s in content)
+        if style == "input":
+            before, at, after = content
+            return "  " + before + self._c("7", at) + after
+        return self._style("  " + content, style)
+
+    def _render(self, title: str, help, widget) -> None:
+        width, height = self._size()
+        bar = f" {self.title}"
+        right = f"{self.context} " if self.context else ""
+        bar = _fit(bar + " " * max(1, width - len(bar) - len(right)) + right, width + 1)
+        top = [self._c("7", bar.ljust(width)[:width]), ""]
+        if self.step_info:
+            n, total, name = self.step_info
+            dots = "●" * n + "○" * (total - n)
+            top.append(self._c("1", f" Passo {n} di {total}: {name}") + "   " + self._c("36", dots))
+            top.append("")
+        top += [self._c("1", " " + line) for line in wrap(title, width - 2)]
+        top += ["  " + line for line in wrap(help or "", width - 4)] if help else []
+        top.append("")
+        notes = []
+        for kind, text in self.notes[-self.NOTES :]:
+            mark = {"ok": self._c("32", "✓ "), "warn": self._c("33", "! ")}.get(kind, "  ")
+            notes.append(" " + mark + _fit(text, width - 4))
+        footer = widget.FOOTER if widget else "attendi..."
+        room = height - len(top) - len(notes) - 3
+        body = []
+        if widget:
+            body = [self._row(r, width - 4) for r in widget.rows(width - 4, max(room, 3))]
+            if widget.message:
+                body.append(self._c("33", "  " + _fit(widget.message, width - 3)))
+        lines = (top + body)[: height - len(notes) - 2]
+        lines += [""] * (height - len(lines) - len(notes) - 2)
+        lines += [""] + notes
+        lines.append(self._c("7", _fit(" " + footer, width + 1).ljust(width)[:width]))
+        out = "\x1b[H" + "\n".join(line + "\x1b[K" for line in lines[:height]) + "\x1b[J"
+        sys.stdout.write(out)
+        sys.stdout.flush()
+
+    def _page(self, title: str, help, widget):
+        self.start()
+        self.busy_text = None
+        while True:
+            self._render(title, help, widget)
+            if widget.key(read_key(self.fd)):
+                return widget
+            # Tasti già arrivati (es. testo incollato): si elaborano prima di ridisegnare.
+            while select.select([self.fd], [], [], 0)[0]:
+                if widget.key(read_key(self.fd)):
+                    return widget
+
+    # --- domande
+    def ask(self, prompt: str, default: str | None = None, check=None, help=None) -> str:
+        def full_check(v):
+            if not v and default is None and not check:
+                return "risposta obbligatoria"
+            return check(v) if check else (None if v else "risposta obbligatoria")
+
+        return self._page(prompt, help, TextInput(default or "", check=full_check)).value.strip()
+
+    def secret(self, prompt: str, help=None) -> str:
+        return self._page(prompt, help, TextInput("", secret=True)).value.strip()
+
+    def yes(self, prompt: str, default: bool = True, help=None) -> bool:
+        return self._page(prompt, help, Menu(["Sì", "No"], 0 if default else 1)).cursor == 0
+
+    def choose(self, title: str, options: list[str], default: int = 0, help=None) -> int:
+        return self._page(title, help, Menu(options, default)).cursor
+
+    def checklist(self, title, keys, labels, selected, disabled, minimum=1, help=None) -> set:
+        widget = Checklist(labels, selected, disabled, minimum=minimum)
+        return self._page(title, help, widget).selected
+
+    def board(self, title, groups, assignment, canaries, help=None):
+        widget = GroupBoard(groups, assignment, canaries)
+        self._page(title, help, widget)
+        return widget.assignment, widget.canaries
+
 
 # ------------------------------------------------------------------ comandi esterni
 
 
 def run(args, input=None, check=True, timeout=None) -> subprocess.CompletedProcess:
     try:
+        # Senza input, stdin chiuso: ssh e kubectl non devono leggere dal terminale.
+        stdin = subprocess.DEVNULL if input is None else None
         proc = subprocess.run(
-            args, input=input, capture_output=True, text=True, timeout=timeout, check=False
+            args,
+            input=input,
+            stdin=stdin,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
     except FileNotFoundError as e:
         raise Fail(f"comando non trovato: {args[0]}") from e
@@ -890,8 +1307,8 @@ def valid_timezone(tz: str) -> bool:
         return False
 
 
-def llm_probe(base_url: str, key: str | None, model: str) -> str | None:
-    """None se l'endpoint risponde e conosce il modello, altrimenti il problema."""
+def llm_models(base_url: str, key: str | None) -> tuple[str | None, list[str]]:
+    """(problema o None, modelli offerti dall'endpoint)."""
     headers = {"User-Agent": USER_AGENT}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -901,18 +1318,155 @@ def llm_probe(base_url: str, key: str | None, model: str) -> str | None:
             data = json.load(resp)
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            return "chiave rifiutata (HTTP 401)"
+            return "chiave rifiutata (HTTP 401)", []
         if e.code == 403:
-            return (
-                "accesso negato (HTTP 403): chiave senza permessi o richiesta bloccata dalla rete"
-            )
-        return f"risposta HTTP {e.code}"
+            return "accesso negato (HTTP 403): chiave senza permessi o richiesta bloccata", []
+        return f"risposta HTTP {e.code}", []
     except (urllib.error.URLError, OSError, ValueError) as e:
-        return f"non raggiungibile da qui ({getattr(e, 'reason', e)})"
-    ids = [m.get("id") for m in data.get("data", []) if isinstance(m, dict)]
-    if ids and model not in ids:
-        return f"il modello {model} non è tra quelli disponibili (es. {', '.join(ids[:8])})"
-    return None
+        return f"non raggiungibile da qui ({getattr(e, 'reason', e)})", []
+    items = data.get("data", []) if isinstance(data, dict) else []
+    ids = sorted({m["id"] for m in items if isinstance(m, dict) and isinstance(m.get("id"), str)})
+    return None, ids
+
+
+def endpoint_name(base_url: str, taken) -> str:
+    """Nome breve dall'host (es. api.esempio.com -> esempio), unico tra quelli usati."""
+    host = urllib.parse.urlparse(base_url).hostname or ""
+    parts = [] if re.fullmatch(r"[0-9.:]+", host) else host.split(".")
+    parts = [p for p in parts if p and p not in GENERIC_HOST_PARTS]
+    base = re.sub(r"[^a-z0-9-]+", "-", (parts[0] if parts else "llm").lower()).strip("-")[:40]
+    base = base or "llm"
+    name, i = base, 2
+    while name in taken:
+        name, i = f"{base}-{i}", i + 1
+    return name
+
+
+def llm_text(llm: dict) -> str:
+    return ", ".join(f"{e['name']} ({e['model']})" for e in llm.get("endpoints", []))
+
+
+def llm_names(llm: dict, keys: dict) -> list[str]:
+    return [e["name"] for e in llm.get("endpoints", []) if e.get("api_key_env") in keys]
+
+
+# ------------------------------------------------------------------ storico
+
+
+def who_text(kube_user: str | None) -> str:
+    user = os.environ.get("SUDO_USER") or getpass.getuser()
+    host = socket.gethostname().split(".")[0]
+    return f"{user}@{host}" + (f" ({kube_user})" if kube_user else "")
+
+
+def history_entry(action: str, changes, note, kube_user, revision) -> dict:
+    entry = {
+        "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "user": getpass.getuser(),
+        "host": socket.gethostname(),
+        "kube_user": kube_user,
+        "action": action,
+        "installer": RELEASE.get("version", "dev"),
+        "changes": list(changes),
+    }
+    if os.environ.get("SUDO_USER"):
+        entry["sudo_user"] = os.environ["SUDO_USER"]
+    if note:
+        entry["note"] = note
+    if revision:
+        entry["helm_revision"] = revision
+    return entry
+
+
+def parse_history(text: str) -> list[dict]:
+    entries = []
+    for line in text.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            entries.append(item)
+    return entries
+
+
+def history_line(e: dict) -> str:
+    when = str(e.get("time", "?"))[:16].replace("T", " ")
+    who = e.get("sudo_user") or e.get("user", "?")
+    host = str(e.get("host", "?")).split(".")[0]
+    note = f": {e['note']}" if e.get("note") else ""
+    return f"{when}  {who}@{host}  {e.get('action', '?')}{note}"
+
+
+def history_details(e: dict) -> str:
+    who = e.get("user", "?")
+    if e.get("sudo_user"):
+        who = f"{e['sudo_user']} (con sudo come {who})"
+    lines = [
+        f"Quando      {e.get('time', '?')}",
+        f"Chi         {who} su {e.get('host', '?')}",
+        f"Kubernetes  {e.get('kube_user') or '?'}",
+        f"Azione      {e.get('action', '?')}",
+        f"Installer   {e.get('installer', '?')}"
+        + (f", revisione Helm {e['helm_revision']}" if e.get("helm_revision") else ""),
+    ]
+    if e.get("note"):
+        lines.append(f"Nota        {e['note']}")
+    changes = e.get("changes") or []
+    lines.append("Modifiche" + ("" if changes else "  nessuna registrata"))
+    lines += [f"  {c}" for c in changes]
+    return "\n".join(lines)
+
+
+def _flatten(value, path: str, out: dict) -> None:
+    if isinstance(value, dict) and value:
+        for k, v in value.items():
+            _flatten(v, f"{path}.{k}" if path else str(k), out)
+    elif (
+        isinstance(value, list)
+        and value
+        and all(isinstance(i, dict) and "name" in i for i in value)
+    ):
+        for item in value:
+            rest = {k: v for k, v in item.items() if k != "name"}
+            _flatten(rest or True, f"{path}[{item['name']}]", out)
+    else:
+        out[path] = value
+
+
+def _fmt(value) -> str:
+    return _fit(json.dumps(value, ensure_ascii=False), 80)
+
+
+def diff_values(old: dict, new: dict) -> list[str]:
+    """Differenze leggibili tra due insiemi di valori Helm (liste per nome)."""
+    a, b = {}, {}
+    _flatten(old, "", a)
+    _flatten(new, "", b)
+    changes = []
+    for path in sorted(set(a) | set(b)):
+        if path not in a:
+            changes.append(f"{path}: {_fmt(b[path])} (nuovo)")
+        elif path not in b:
+            changes.append(f"{path}: {_fmt(a[path])} (tolto)")
+        elif a[path] != b[path]:
+            changes.append(f"{path}: {_fmt(a[path])} → {_fmt(b[path])}")
+    return changes
+
+
+def node_label_changes(nodes, assignment: dict) -> list[str]:
+    changes = []
+    for n in nodes:
+        old, new = n.labels.get(GROUP_LABEL), assignment.get(n.name)
+        if old == new:
+            continue
+        if old is None:
+            changes.append(f"nodo {n.name}: aggiunto al gruppo {new}")
+        elif new is None:
+            changes.append(f"nodo {n.name}: non più gestito (era in {old})")
+        else:
+            changes.append(f"nodo {n.name}: dal gruppo {old} al gruppo {new}")
+    return changes
 
 
 def env_name(endpoint: str) -> str:
@@ -923,7 +1477,9 @@ def env_name(endpoint: str) -> str:
 
 
 class Installer:
-    def __init__(self, args, ui: UI):
+    STEPS = 6
+
+    def __init__(self, args, ui):
         self.args = args
         self.ui = ui
         self.ns = args.namespace
@@ -933,6 +1489,7 @@ class Installer:
         self.helm_bin = "helm"
         self.port = args.ssh_port or 22
         self.pending_secrets: list = []  # creati solo dopo la conferma finale
+        self.kube_user = None
 
     # --- comandi
     def kubectl(self, *args, ns=False, input=None, check=True):
@@ -970,54 +1527,55 @@ class Installer:
 
     def _run(self) -> int:
         ui = self.ui
-        version = RELEASE.get("version", "copia locale della repo")
-        ui.title(f"SAGE, installer ({version})")
+        ui.header(f"SAGE · installer {RELEASE.get('version', 'copia locale della repo')}")
+        ui.busy("Controllo il cluster e i permessi...")
         self.preflight()
         current = self.current_values()
         if current is None:
             return self.configure({}, new=True)
-        mode = "simulazione" if current.get("dryRun", True) else "REALE"
-        auto = "sospesi" if current.get("suspend", True) else "attivi"
-        ui.info(
-            f"SAGE è già installato (release {self.release}, namespace {self.ns}): "
-            f"modalità {mode}, giri automatici {auto}."
-        )
-        live = not current.get("dryRun", True)
-        options = [
-            "Riconfigura (nodi, gruppi, LLM, frequenza) partendo da quella attuale",
-            "Torna alla simulazione" if live else "Passa al vivo: SAGE applicherà le remediation",
-            "Riattiva i giri automatici" if current.get("suspend", True) else "Sospendi i giri",
-            "Lancia un giro adesso",
-            "Disinstalla SAGE",
-            "Esci",
-        ]
-        choice = ui.choose("Cosa vuoi fare?", options)
-        if choice == 0:
-            return self.configure(current, new=False)
-        if choice == 1:
-            return self.toggle_live(current)
-        if choice == 2:
-            values = copy.deepcopy(current)
-            values["suspend"] = not current.get("suspend", True)
-            self.helm_apply(values)
-            ui.ok("giri automatici " + ("sospesi" if values["suspend"] else "attivi"))
+        while True:
+            live = not current.get("dryRun", True)
+            suspended = current.get("suspend", True)
+            status = (
+                f"SAGE è già installato (release {self.release}, namespace {self.ns}).\n"
+                f"Modalità: {'REALE' if live else 'simulazione'}. "
+                f"Giri automatici: {'sospesi' if suspended else 'attivi'}."
+            )
+            options = [
+                "Riconfigura: nodi, gruppi, LLM, frequenza (parte da quella attuale)",
+                "Torna alla simulazione"
+                if live
+                else "Passa al vivo: SAGE applicherà le remediation",
+                "Riattiva i giri automatici" if suspended else "Sospendi i giri automatici",
+                "Lancia un giro adesso",
+                "Storico delle modifiche",
+                "Disinstalla SAGE",
+                "Esci",
+            ]
+            choice = ui.choose("Cosa vuoi fare?", options, help=status)
+            if choice == 0:
+                return self.configure(current, new=False)
+            if choice == 1:
+                return self.toggle_live(current)
+            if choice == 2:
+                return self.toggle_suspend(current)
+            if choice == 3:
+                return self.run_now()
+            if choice == 4:
+                self.show_history()
+                continue
+            if choice == 5:
+                return self.uninstall(current)
             return 0
-        if choice == 3:
-            return self.run_now()
-        if choice == 4:
-            return self.uninstall(current)
-        return 0
 
     def preflight(self) -> None:
-        ui = self.ui
         if not shutil.which("kubectl"):
             raise Fail(
                 "kubectl non trovato: lancia l'installer da un master o da una macchina "
                 "con kubectl configurato"
             )
-        ctx = self.kubectl("config", "current-context", check=False).stdout.strip()
-        if self.args.context:
-            ctx = self.args.context
+        ctx = self.args.context or self.kubectl("config", "current-context", check=False).stdout
+        ctx = ctx.strip()
         try:
             version = json.loads(self.kubectl("get", "--raw", "/version").stdout)["gitVersion"]
         except (Fail, KeyError, ValueError) as e:
@@ -1037,8 +1595,20 @@ class Installer:
                 "permessi insufficienti sul cluster (serve un amministratore): "
                 + ", ".join(missing)
             )
-        ui.info(f"Cluster: {ctx} (Kubernetes {version}), namespace {self.ns}")
+        self.kube_user = self.whoami()
+        self.ui.cluster(f"{ctx} · Kubernetes {version}")
         self.helm_bin = self.ensure_helm()
+
+    def whoami(self) -> str | None:
+        proc = self.kubectl(
+            "auth", "whoami", "-o", "jsonpath={.status.userInfo.username}", check=False
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+        proc = self.kubectl(
+            "config", "view", "--minify", "-o", "jsonpath={.contexts[0].context.user}", check=False
+        )
+        return proc.stdout.strip() or None
 
     def ensure_helm(self) -> str:
         found = shutil.which("helm")
@@ -1055,10 +1625,14 @@ class Installer:
         if target.exists():
             return str(target)
         if not self.ui.yes(
-            f"Helm non è installato. Scarico Helm {version} in {target.parent} "
-            "(checksum verificato, usato solo dall'installer)?"
+            f"Scarico Helm {version}?",
+            help=(
+                f"Helm non è installato su questa macchina. L'installer lo scarica in "
+                f"{target.parent}, ne verifica il checksum e lo usa solo per SAGE."
+            ),
         ):
             raise Fail("serve Helm per installare SAGE")
+        self.ui.busy(f"Scarico Helm {version}...")
         data = download(url, sha)
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             member = tar.extractfile(f"linux-{arch}/helm")
@@ -1079,13 +1653,14 @@ class Installer:
     # --- configurazione
     def configure(self, current: dict, new: bool) -> int:
         ui = self.ui
+        total = self.STEPS
         config = current.get("config", {})
         nodes = parse_nodes(self.kjson("get", "nodes"))
         if not nodes:
             raise Fail("il cluster non ha nodi")
 
         # 1. nodi
-        ui.title("1. Nodi da far gestire a SAGE")
+        ui.step(1, total, "Nodi")
         width = max(len(n.name) for n in nodes)
         disabled = {i: n.problem for i, n in enumerate(nodes) if n.problem}
         if new:
@@ -1093,11 +1668,16 @@ class Installer:
         else:
             preselected = {i for i, n in enumerate(nodes) if GROUP_LABEL in n.labels}
         chosen = ui.checklist(
-            "Scegli i nodi:",
+            "Quali nodi deve gestire SAGE?",
             [n.name for n in nodes],
             [n.label(width) for n in nodes],
             preselected,
             disabled,
+            help=(
+                "Elenco letto da Kubernetes. I nodi non spuntati non vengono mai toccati. "
+                "Quelli con un sistema operativo non supportato (serve dnf) non sono "
+                "selezionabili."
+            ),
         )
         selected = [nodes[i] for i in sorted(chosen)]
         for n in selected:
@@ -1105,31 +1685,39 @@ class Installer:
                 ui.warn(f"{n.name} non è Ready: SAGE lo salterà finché non torna pronto")
 
         # 2. SSH: prima dei gruppi, perché i nodi irraggiungibili possono essere esclusi
-        ui.title("2. Accesso SSH ai nodi")
+        ui.step(2, total, "Accesso SSH")
         default_user = (
             config.get("ssh", {}).get("user") or os.environ.get("SUDO_USER") or getpass.getuser()
         )
-        user = ui.ask("Utente SSH sui nodi (con sudo senza password)", default_user)
+        user = ui.ask(
+            "Utente SSH sui nodi",
+            default_user,
+            help=(
+                "Serve sudo senza password su tutti i nodi scelti; di solito è l'utente con "
+                "cui sei entrato qui. L'installer crea una chiave dedicata a SAGE e la "
+                "installa sui nodi con le tue credenziali (agent SSH)."
+            ),
+        )
         self.port = self.args.ssh_port or int(config.get("ssh", {}).get("port", 22))
-        private, _, known_hosts = self.prepare_ssh(user, selected)
+        private, key_note, known_hosts = self.prepare_ssh(user, selected)
 
         # 3. gruppi
-        ui.title("3. Gruppi e ondate")
+        ui.step(3, total, "Gruppi e ondate")
         groups, assignment = self.initial_groups(config, selected)
-        groups = self.edit_groups(groups, assignment, selected)
+        groups = self.edit_groups(groups, assignment, selected, new)
 
         # 4. LLM
-        ui.title("4. LLM")
+        ui.step(4, total, "LLM")
         llm, llm_keys = self.configure_llm(config.get("llm", {}), groups)
 
-        # 5. quando e come
-        ui.title("5. Frequenza e rete")
+        # 5. frequenza e rete
+        ui.step(5, total, "Frequenza e rete")
         schedule = self.choose_schedule(current.get("schedule"))
-        tz_default = current.get("timeZone") or local_timezone()
-        timezone = ui.ask(
-            "Fuso orario (finestre di manutenzione e giri)",
-            tz_default,
-            lambda v: None if valid_timezone(v) else "fuso sconosciuto",
+        timezone_name = ui.ask(
+            "Fuso orario",
+            current.get("timeZone") or local_timezone(),
+            lambda v: None if valid_timezone(v) else "fuso sconosciuto (es. Europe/Rome)",
+            help="Vale per gli orari dei giri e per le finestre di manutenzione dei gruppi.",
         )
         api_ip = (
             self.kubectl(
@@ -1146,14 +1734,20 @@ class Installer:
         )
         proxy = self.choose_proxy(current, [n.ip for n in nodes if n.ip], api_ip)
         if new:
-            suspend = not ui.yes(f"Attivo i giri automatici ({schedule}) in simulazione?")
+            suspend = not ui.yes(
+                "Attivo i giri automatici?",
+                help=(
+                    "Una nuova installazione è sempre in simulazione: i giri analizzano i "
+                    "nodi e dicono cosa farebbero, senza toccarli. Il passaggio al vivo si "
+                    "fa dopo, rilanciando l'installer."
+                ),
+            )
         else:
             suspend = bool(current.get("suspend", True))
 
-        # 6. immagine
         image = self.args.image or RELEASE.get("image") or image_ref(current)
         if not image:
-            image = ui.ask("Immagine di SAGE (es. registro/owner/sage@sha256:...)")
+            image = ui.ask("Immagine di SAGE", help="Es. registro/owner/sage@sha256:...")
         pull_secret = self.check_image(image, current)
 
         values = build_values(
@@ -1162,7 +1756,7 @@ class Installer:
             image=image,
             pull_secret=pull_secret,
             schedule=schedule,
-            timezone=timezone,
+            timezone=timezone_name,
             suspend=suspend,
             ssh_user=user,
             ssh_port=self.port,
@@ -1171,27 +1765,28 @@ class Installer:
             groups=groups,
             proxy=proxy,
         )
+        label_changes = node_label_changes(nodes, assignment)
+        changes = []
+        if not new:
+            changes = diff_values(current, values) + label_changes
+        changes += [f"chiave API di {name}: aggiornata" for name in llm_names(llm, llm_keys)]
+        if key_note:
+            changes.append(key_note)
 
-        # 7. riepilogo
-        ui.title("Riepilogo")
-        ui.info(f"  Immagine   {image}")
-        for g in groups:
-            names = ", ".join(f"{m}*" if m == g.canary else m for m in members(assignment, g.name))
-            ui.info(f"  Ondata {g.order}   {g.name}: {names}  ({g.kernel_text()})")
-        ui.info("             (* = canary)")
-        ui.info(f"  SSH        utente {user}, chiave dedicata")
-        llm_text = ", ".join(f"{e['name']} ({e['model']})" for e in llm.get("endpoints", []))
-        ui.info(f"  LLM        {llm_text or 'nessuno: solo regole deterministiche'}")
-        when = "sospesi" if suspend else schedule
-        ui.info(
-            f"  Giri       {when} ({timezone}), "
-            + ("simulazione" if values["dryRun"] else "MODALITÀ REALE")
-        )
-        if not ui.yes("Procedo?"):
+        # 6. riepilogo
+        ui.step(6, total, "Riepilogo")
+        summary = self.summary_text(image, groups, assignment, user, llm, schedule, values)
+        if not new:
+            summary += "\n\nModifiche rispetto a ora:\n" + (
+                "\n".join(f"  {c}" for c in changes) if changes else "  nessuna"
+            )
+        if not ui.yes("Procedo?", help=summary):
             ui.info("Nessuna modifica fatta.")
             return 0
+        note = self.ask_note()
 
-        # 8. applicazione
+        # applicazione
+        ui.busy("Installo SAGE sul cluster...")
         self.ensure_namespace()
         for name, data, kind in self.pending_secrets:
             self.apply_secret(name, data, kind)
@@ -1202,11 +1797,57 @@ class Installer:
             existing = self.read_secret(f"{self.release}-llm")
             self.apply_secret(f"{self.release}-llm", {**existing, **llm_keys})
         self.apply_labels(nodes, assignment)
-        self.helm_apply(values)
-        ui.ok(f"SAGE installato nel namespace {self.ns}")
-        if ui.yes("Lancio subito un giro in simulazione e ne mostro il log?", new):
+        action = "installazione" if new else "riconfigurazione"
+        revision = self.helm_apply(values, action)
+        if new:
+            changes = [f"gruppo {g.name}: {', '.join(members(assignment, g.name))}" for g in groups]
+            changes += [
+                f"utente SSH {user}",
+                "LLM: " + (llm_text(llm) or "nessuno"),
+                f"giri: {schedule} ({timezone_name}), "
+                + ("sospesi" if suspend else "attivi")
+                + ", simulazione",
+            ]
+            if key_note:
+                changes.append(key_note)
+        self.record(action, changes, note, revision)
+        ui.ok(f"SAGE {'installato' if new else 'aggiornato'} nel namespace {self.ns}")
+        if ui.yes(
+            "Lancio subito un giro e ne mostro il log?",
+            new,
+            help="Il log compare nel terminale normale, alla chiusura di questa schermata.",
+        ):
             return self.run_now()
         return 0
+
+    def summary_text(self, image, groups, assignment, user, llm, schedule, values) -> str:
+        lines = [f"Immagine   {image}"]
+        suffix = common_suffix(list(assignment))
+        for g in sorted(groups, key=lambda g: g.order):
+            names = ", ".join(
+                (m[: -len(suffix)] if suffix else m) + ("*" if m == g.canary else "")
+                for m in members(assignment, g.name)
+            )
+            lines.append(f"Ondata {g.order}   {g.name}: {names}  ({g.kernel_text()})")
+        if suffix:
+            lines.append(f"           (nomi senza il suffisso comune {suffix}; * = canary)")
+        lines.append(f"SSH        utente {user}, chiave dedicata")
+        lines.append(f"LLM        {llm_text(llm) or 'nessuno: solo regole deterministiche'}")
+        mode = "simulazione" if values["dryRun"] else "MODALITÀ REALE"
+        when = "sospesi" if values["suspend"] else schedule
+        lines.append(f"Giri       {when} ({values['timeZone']}), {mode}")
+        return "\n".join(lines)
+
+    def ask_note(self) -> str:
+        return self.ui.ask(
+            "Nota per lo storico (facoltativa)",
+            "",
+            lambda v: None,
+            help=(
+                "Chi, quando e cosa cambia vengono registrati comunque nello storico "
+                "delle modifiche. Qui puoi aggiungere il perché."
+            ),
+        )
 
     def initial_groups(self, config, selected):
         names = {n.name for n in selected}
@@ -1231,9 +1872,26 @@ class Installer:
         assignment = {k: v for k, v in assignment.items() if k in names}
         return normalize_groups(list(by_name.values()), assignment), assignment
 
-    def show_groups(self, groups, assignment) -> None:
+    def groups_text(self, groups, assignment, new: bool) -> str:
+        if new:
+            intro = (
+                "Proposta calcolata da Kubernetes: i nodi con il ruolo control-plane vanno "
+                "in master, quelli che dichiarano GPU in gpu, gli altri in worker. I gruppi "
+                "si aggiornano uno dopo l'altro (ondate); ogni nodo riceverà l'etichetta "
+                f"{GROUP_LABEL} con il suo gruppo."
+            )
+        else:
+            intro = (
+                f"Gruppi attuali, letti dall'etichetta {GROUP_LABEL} dei nodi. I nodi nuovi "
+                "sono proposti in base a Kubernetes (control-plane, GPU, altri)."
+            )
+        suffix = common_suffix(list(assignment))
+        lines = [intro, ""]
         for g in sorted(groups, key=lambda g: g.order):
-            names = ", ".join(f"{m}*" if m == g.canary else m for m in members(assignment, g.name))
+            names = ", ".join(
+                (m[: -len(suffix)] if suffix else m) + ("*" if m == g.canary else "")
+                for m in members(assignment, g.name)
+            )
             extras = []
             if g.concurrency > 1:
                 extras.append(f"{g.concurrency} nodi alla volta")
@@ -1244,47 +1902,50 @@ class Installer:
             if g.requires_fallback:
                 extras.append("serve una riserva LLM")
             tail = f"; {', '.join(extras)}" if extras else ""
-            self.ui.info(f"  {g.order}. {g.name}: {names}  ({g.kernel_text()}{tail})")
-        self.ui.info("  (* = canary: il primo del gruppo, poi qualche ora di osservazione)")
+            lines.append(f"  Ondata {g.order}  {g.name}: {names}  ({g.kernel_text()}{tail})")
+        lines.append("")
+        lines.append(
+            "* = canary: si aggiorna per primo, poi qualche ora di osservazione prima degli "
+            "altri nodi del gruppo."
+        )
+        if suffix:
+            lines.append(f"Nomi senza il suffisso comune {suffix}.")
+        return "\n".join(lines)
 
-    def edit_groups(self, groups, assignment, selected):
+    def edit_groups(self, groups, assignment, selected, new=True):
         ui = self.ui
         while True:
             groups = normalize_groups(groups, assignment)
-            self.show_groups(groups, assignment)
             choice = ui.choose(
                 "I gruppi vanno bene?",
                 [
                     "Sì, continua",
-                    "Sposta un nodo in un altro gruppo",
+                    "Sposta i nodi tra i gruppi",
                     "Modifica un gruppo (ordine, canary, kernel, parallelismo...)",
                     "Crea un gruppo nuovo",
                 ],
+                help=self.groups_text(groups, assignment, new),
             )
             if choice == 0:
                 return groups
-            if choice == 1:
-                names = [n.name for n in selected]
-                labels = [f"{n}  (ora in {assignment[n]})" for n in names]
-                node = names[ui.choose("Quale nodo?", labels)]
-                options = [g.name for g in groups] + ["un gruppo nuovo..."]
-                target = ui.choose(f"In quale gruppo va {node}?", options)
-                if target == len(groups):
-                    group = self.new_group(groups)
-                    groups.append(group)
-                    assignment[node] = group.name
-                else:
-                    assignment[node] = groups[target].name
+            if choice == 3:
+                groups.append(self.new_group(groups))
+            if choice in (1, 3):
+                ordered = sorted(groups, key=lambda g: g.order)
+                moved, canaries = ui.board(
+                    "Sposta i nodi tra i gruppi",
+                    [g.name for g in ordered],
+                    assignment,
+                    {g.name: g.canary for g in ordered},
+                    help="Una colonna per gruppo, nell'ordine delle ondate.",
+                )
+                assignment.clear()
+                assignment.update(moved)
+                for g in groups:
+                    g.canary = canaries.get(g.name)
             elif choice == 2:
                 index = ui.choose("Quale gruppo?", [g.name for g in groups])
                 self.edit_group(groups[index], groups, assignment)
-            else:
-                group = self.new_group(groups)
-                groups.append(group)
-                names = [n.name for n in selected]
-                moved = ui.checklist(f"Nodi da mettere in {group.name}:", names, names, set(), {})
-                for i in moved:
-                    assignment[names[i]] = group.name
 
     def new_group(self, groups) -> Group:
         taken = {g.name for g in groups}
@@ -1294,7 +1955,12 @@ class Installer:
                 return "minuscole, cifre e trattini, massimo 63 caratteri"
             return "nome già usato" if v in taken else None
 
-        name = self.ui.ask("Nome del gruppo", None, check)
+        name = self.ui.ask(
+            "Nome del gruppo nuovo",
+            None,
+            check,
+            help="Poi scegli quali nodi spostarci. Verrà aggiornato per ultimo.",
+        )
         return Group(name, max((g.order for g in groups), default=0) + 1, "window", DEFAULT_WINDOW)
 
     def edit_group(self, group: Group, groups, assignment) -> None:
@@ -1317,7 +1983,7 @@ class Installer:
             if choice == 0:
                 return
             if choice == 1:
-                order = ui.ask_int("Ordine (1 = per primo)", group.order)
+                order = ui.ask_int("Ordine dell'ondata (1 = per primo)", group.order)
                 other = next((g for g in groups if g.order == order and g is not group), None)
                 if other:
                     other.order = group.order  # scambio
@@ -1328,6 +1994,7 @@ class Installer:
                     "Canary del gruppo",
                     opts,
                     opts.index(group.canary) if group.canary in opts else 0,
+                    help="Il canary si aggiorna per primo; gli altri aspettano l'osservazione.",
                 )
                 group.canary = None if pick == 0 else opts[pick]
             elif choice == 3:
@@ -1336,13 +2003,15 @@ class Installer:
                     "Aggiornamenti del kernel",
                     [f"{k}: {d}" for k, d in KERNEL_MODES],
                     modes.index(group.kernel) if group.kernel in modes else 1,
+                    help="Un kernel nuovo richiede di svuotare e riavviare il nodo.",
                 )
                 group.kernel = modes[pick]
                 if group.kernel == "window":
                     group.window = ui.ask(
-                        "Finestra (giorni e orario, es. sat 02:00-06:00 o sat,sun 01:00-05:00)",
+                        "Finestra di manutenzione",
                         group.window or DEFAULT_WINDOW,
                         lambda v: None if WINDOW_RE.match(v) else "formato: sat 02:00-06:00",
+                        help="Giorni e orario, es. sat 02:00-06:00 oppure sat,sun 01:00-05:00.",
                     )
             elif choice == 4:
                 group.concurrency = ui.ask_int("Quanti nodi del gruppo insieme", group.concurrency)
@@ -1354,7 +2023,7 @@ class Installer:
                 group.requires_fallback = not group.requires_fallback
 
     # --- SSH
-    def prepare_ssh(self, user: str, selected: list[NodeInfo]):
+    def prepare_ssh(self, user: str, selected: list):
         ui = self.ui
         key = self.tmp / "id_ed25519"
         known_hosts = self.tmp / "known_hosts"
@@ -1365,38 +2034,42 @@ class Installer:
             known_hosts.write_text(existing.get("known_hosts", ""))
             key.chmod(0o600)
             public = run(["ssh-keygen", "-y", "-f", str(key)]).stdout.strip()
+            note = None
         else:
             comment = f"sage@{self.release}"
             run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(key)])
             public = (self.tmp / "id_ed25519.pub").read_text().strip()
             known_hosts.write_text(existing.get("known_hosts", ""))
             ui.ok("chiave SSH dedicata creata (resta solo nel Secret del cluster)")
+            note = f"chiave SSH di SAGE creata ({public.split()[0]})"
 
         pending = list(selected)
         while True:
-            results = self.parallel(
+            ui.busy("Controllo l'accesso SSH ai nodi...")
+            failed = {}
+            for n, problem in self.parallel(
                 pending, lambda n: self.setup_node(n, user, key, public, known_hosts)
-            )
-            failed = {n.name: problem for n, problem in results if problem}
-            for n, problem in results:
-                if not problem:
+            ):
+                if problem:
+                    failed[n.name] = problem
+                    ui.warn(f"{n.name}: {problem}")
+                else:
                     ui.ok(f"{n.name}: chiave installata, sudo, dnf e python3 presenti")
             if not failed:
                 break
-            ui.warn("alcuni nodi non sono pronti:")
-            for name, problem in failed.items():
-                ui.info(f"  {name}: {problem}")
-            ui.info(
-                "Se l'accesso è negato, installa a mano questa chiave pubblica in "
-                f"~{user}/.ssh/authorized_keys su quei nodi:\n  {public}\n"
-                "Su un master raggiunto con `ssh -A` (agent forwarding) di solito basta "
-                "rilanciare: l'installer usa le tue credenziali per installarla."
-            )
             options = ["Riprova", "Escludi questi nodi e continua", "Interrompi"]
             changed = [n for n in failed if "chiave host" in failed[n]]
             if changed:
                 options.insert(1, "Accetta la nuova chiave host dei nodi ricreati e riprova")
-            choice = options[ui.choose("Come procedo?", options)]
+            help = "\n".join(f"{name}: {problem}" for name, problem in failed.items()) + (
+                "\n\nSe l'accesso è negato, installa a mano questa chiave pubblica in "
+                f"~{user}/.ssh/authorized_keys su quei nodi:\n{public}\n\n"
+                "Su un master raggiunto con ssh -A (agent forwarding) di solito basta "
+                "riprovare: l'installer usa le tue credenziali per installarla."
+            )
+            choice = options[
+                ui.choose("Alcuni nodi non sono pronti. Come procedo?", options, help=help)
+            ]
             if choice.startswith("Interrompi"):
                 raise Fail("installazione interrotta, nessuna modifica al cluster")
             if choice.startswith("Accetta"):
@@ -1409,9 +2082,9 @@ class Installer:
                     raise Fail("nessun nodo utilizzabile")
                 break
             pending = [n for n in selected if n.name in failed]
-        return key.read_text(), public, known_hosts.read_text()
+        return key.read_text(), note, known_hosts.read_text()
 
-    def setup_node(self, node: NodeInfo, user, key, public, known_hosts) -> str | None:
+    def setup_node(self, node, user, key, public, known_hosts) -> str | None:
         check = self.ssh(node.ip, CHECK_COMMAND, user, key, known_hosts)
         if check.returncode == 255:
             stderr = check.stderr
@@ -1430,8 +2103,11 @@ class Installer:
         return ", ".join(problems) or None
 
     def parallel(self, nodes, fn):
+        """Risultati nell'ordine in cui arrivano, così l'avanzamento si vede subito."""
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-            return list(zip(nodes, pool.map(fn, nodes)))
+            futures = {pool.submit(fn, n): n for n in nodes}
+            for future in concurrent.futures.as_completed(futures):
+                yield futures[future], future.result()
 
     # --- LLM
     def configure_llm(self, current: dict, groups) -> tuple[dict, dict]:
@@ -1439,107 +2115,112 @@ class Installer:
         endpoints = list(current.get("endpoints") or [])
         options = []
         if endpoints:
-            names = ", ".join(f"{e['name']} ({e['model']})" for e in endpoints)
-            options.append(f"Mantieni quello attuale: {names}")
+            options.append(f"Mantieni quello attuale: {llm_text({'endpoints': endpoints})}")
         options += [
-            "Groq (gratuito, serve una chiave API da console.groq.com)",
-            "Un altro endpoint compatibile con l'API OpenAI (vLLM, Ollama, server CINECA...)",
+            "Configura un endpoint (API compatibile con OpenAI)",
             "Nessun LLM: solo regole deterministiche (nel dubbio si aggiorna)",
         ]
-        choice = options[ui.choose("Quale LLM usa SAGE per leggere le CVE?", options)]
+        choice = options[
+            ui.choose(
+                "Quale LLM usa SAGE per leggere le CVE?",
+                options,
+                help=(
+                    "SAGE manda all'LLM solo i dati pubblici delle CVE, mai quelli dei nodi. "
+                    "Va bene qualsiasi servizio con API compatibile con OpenAI: un server "
+                    "vLLM o Ollama, l'endpoint del centro di calcolo, un servizio esterno."
+                ),
+            )
+        ]
         if choice.startswith("Mantieni"):
             return {"endpoints": endpoints}, {}
         if choice.startswith("Nessun"):
             return {"endpoints": []}, {}
         endpoints, keys = [], {}
-        kind = "groq" if choice.startswith("Groq") else "custom"
         while True:
-            endpoint, key = self.ask_endpoint(kind, groups, {e["name"] for e in endpoints})
+            endpoint, key = self.ask_endpoint(groups, {e["name"] for e in endpoints}, not endpoints)
             endpoints.append(endpoint)
             if key:
                 keys[endpoint["api_key_env"]] = key
             if not ui.yes(
-                "Aggiungo un endpoint di riserva (usato se il primo non risponde)?", False
+                "Aggiungo un endpoint di riserva?",
+                False,
+                help=(
+                    "La riserva si usa quando il primo endpoint non risponde. È consigliata "
+                    "se l'LLM principale gira su un nodo del cluster: quel gruppo si "
+                    "aggiorna solo con una riserva attiva."
+                ),
             ):
                 break
-            pick = ui.choose("Riserva:", ["Groq", "Un altro endpoint compatibile OpenAI"])
-            kind = "groq" if pick == 0 else "custom"
-        llm = {"endpoints": endpoints}
-        if any(e["base_url"] == GROQ["base_url"] for e in endpoints):
-            llm["min_interval_seconds"] = max(
-                float(current.get("min_interval_seconds", 0)), GROQ_MIN_INTERVAL
-            )
-        return llm, keys
+        return {"endpoints": endpoints}, keys
 
-    def ask_endpoint(self, kind, groups, taken) -> tuple[dict, str | None]:
+    def ask_endpoint(self, groups, taken, first: bool) -> tuple[dict, str | None]:
         ui = self.ui
-        if kind == "groq":
-            endpoint = dict(GROQ)
-            if endpoint["name"] in taken:
-                endpoint["name"] = "groq-2"
-                endpoint["api_key_env"] = "GROQ_2_API_KEY"
-            endpoint["model"] = ui.ask("Modello", GROQ["model"])
-        else:
-            name = ui.ask(
-                "Nome breve dell'endpoint",
-                None,
-                lambda v: (
-                    None
-                    if NAME_RE.match(v) and v not in taken
-                    else "minuscole, cifre e trattini, non già usato"
-                ),
-            )
-            endpoint = {
-                "name": name,
-                "base_url": ui.ask(
-                    "URL di base (es. http://host:8000/v1)",
-                    None,
-                    lambda v: (
-                        None
-                        if v.startswith(("http://", "https://"))
-                        else "deve iniziare con http:// o https://"
-                    ),
-                ),
-                "model": ui.ask("Modello"),
-            }
-            group_names = [g.name for g in groups]
-            where = ui.choose(
-                "Dove gira?",
-                ["Fuori dal cluster gestito"] + [f"Su un nodo del gruppo {g}" for g in group_names],
-            )
-            if where:
-                endpoint["hosted_in_group"] = group_names[where - 1]
-                groups[where - 1].requires_fallback = True
-                ui.info(
-                    f"Il gruppo {group_names[where - 1]} si aggiornerà solo con una riserva "
-                    "LLM attiva fuori da quel gruppo."
-                )
+        which = "principale" if first else "di riserva"
+        base_url = ui.ask(
+            f"URL dell'endpoint {which}",
+            None,
+            lambda v: (
+                None
+                if v.startswith(("http://", "https://"))
+                else "deve iniziare con http:// o https://"
+            ),
+            help=(
+                "Indirizzo di base dell'API compatibile con OpenAI, di solito finisce con "
+                "/v1. Esempi: http://<server>:8000/v1 (vLLM), http://<server>:11434/v1 "
+                "(Ollama), https://<servizio>/v1."
+            ),
+        ).rstrip("/")
+        key = ui.secret(
+            "Chiave API",
+            help="Lasciala vuota se l'endpoint non la richiede. Viene salvata solo in un "
+            "Secret del cluster e non compare nello storico.",
+        )
         while True:
-            key = ui.secret(
-                f"Chiave API per {endpoint['name']}"
-                + ("" if kind == "groq" else " (vuota se non serve)")
-            )
-            if kind == "groq" and not key:
-                ui.warn("per Groq serve la chiave")
-                continue
-            break
-        while True:
-            problem = llm_probe(endpoint["base_url"], key or None, endpoint["model"])
-            if not problem:
-                ui.ok(f"{endpoint['name']} risponde")
+            ui.busy(f"Contatto {base_url}...")
+            problem, models = llm_models(base_url, key or None)
+            if problem is None:
                 break
-            ui.warn(f"{endpoint['name']}: {problem}")
+            ui.warn(f"{base_url}: {problem}")
             if problem.startswith(("chiave", "accesso")) and ui.yes(
-                "Inserisco un'altra chiave?", problem.startswith("chiave")
+                "Inserisco un'altra chiave?", problem.startswith("chiave"), help=problem
             ):
-                key = ui.secret(f"Chiave API per {endpoint['name']}")
-            elif "modello" in problem and ui.yes("Scelgo un altro modello?"):
-                endpoint["model"] = ui.ask("Modello", endpoint["model"])
-            else:
-                # Es. endpoint interno raggiungibile dai pod ma non da qui: si prosegue.
-                break
-        if key and kind != "groq":
-            endpoint["api_key_env"] = env_name(endpoint["name"])
+                key = ui.secret("Chiave API")
+                continue
+            # Es. endpoint raggiungibile dai pod ma non da qui: si prosegue.
+            break
+        if models:
+            ui.ok(f"{base_url} risponde: {len(models)} modelli")
+            options = models + ["Un altro: lo scrivo io"]
+            pick = ui.choose(
+                "Quale modello usa SAGE?",
+                options,
+                help="Elenco letto dall'endpoint. Serve un modello per chat che segua "
+                "bene le istruzioni e risponda in JSON.",
+            )
+            model = models[pick] if pick < len(models) else ui.ask("Nome del modello")
+        else:
+            model = ui.ask(
+                "Nome del modello",
+                help="Non ho potuto leggere l'elenco dei modelli: scrivilo come lo vuole l'API.",
+            )
+        name = endpoint_name(base_url, taken)
+        endpoint = {"name": name, "base_url": base_url, "model": model}
+        if key:
+            endpoint["api_key_env"] = env_name(name)
+        where = ui.choose(
+            "Dove gira questo LLM?",
+            ["Fuori dai nodi gestiti da SAGE"]
+            + [f"Su un nodo del gruppo {g.name}" for g in groups],
+            help=(
+                "Se gira su un nodo che SAGE aggiorna, quel gruppo verrà aggiornato solo "
+                "quando una riserva fuori dal gruppo risponde: l'LLM non resta mai senza "
+                "alternativa."
+            ),
+        )
+        if where:
+            group = groups[where - 1]
+            endpoint["hosted_in_group"] = group.name
+            group.requires_fallback = True
         return endpoint, key or None
 
     # --- frequenza e rete
@@ -1551,13 +2232,19 @@ class Installer:
             options.insert(0, f"come ora ({current})")
             crons.insert(0, current)
         options.append("personalizzata (espressione cron)")
-        pick = self.ui.choose("Ogni quanto controlla i nodi?", options, default)
+        pick = self.ui.choose(
+            "Ogni quanto SAGE controlla i nodi?",
+            options,
+            default,
+            help="Analisi e remediation avanzano a ogni giro.",
+        )
         if pick < len(crons):
             return crons[pick]
         return self.ui.ask(
-            "Espressione cron (minuto ora giorno mese giorno-settimana)",
+            "Espressione cron",
             None,
             lambda v: None if len(v.split()) == 5 else "servono 5 campi",
+            help="Cinque campi: minuto ora giorno mese giorno-della-settimana.",
         )
 
     def choose_proxy(self, current: dict, ips, api_ip) -> list[dict]:
@@ -1568,17 +2255,23 @@ class Installer:
         if detected and detected.startswith("socks"):
             detected = None  # un tunnel SOCKS locale non vale per i pod
         if not self.ui.yes(
-            "I pod del cluster escono su Internet tramite un proxy HTTP?", bool(detected)
+            "I pod escono su Internet tramite un proxy HTTP?",
+            bool(detected),
+            help=(
+                "SAGE scarica i cataloghi pubblici delle CVE (CISA KEV, EPSS, CVE Program) "
+                "e chiama l'LLM. Se i pod non escono direttamente, serve un proxy."
+            ),
         ):
             return []
         proxy = self.ui.ask(
-            "URL del proxy (es. http://proxy:3128)",
+            "URL del proxy",
             detected,
             lambda v: (
                 None
                 if v.startswith(("http://", "https://"))
                 else "deve iniziare con http:// o https://"
             ),
+            help="Es. http://proxy:3128. I nodi e i servizi del cluster restano esclusi.",
         )
         return proxy_env(proxy, ips, api_ip)
 
@@ -1586,20 +2279,21 @@ class Installer:
     def check_image(self, image: str, current: dict) -> str | None:
         ui = self.ui
         pull = (current.get("imagePullSecrets") or [{}])[0].get("name")
+        ui.busy("Controllo che i nodi possano scaricare l'immagine...")
         access = image_access(image)
         if access == "public" or pull:
             return pull
         if access.startswith("unknown"):
             ui.warn(f"non riesco a verificare l'immagine da qui ({access[9:]}): proseguo")
             return None
-        ui.warn("l'immagine non si scarica senza credenziali (pacchetto privato?).")
         choice = ui.choose(
-            "Come procedo?",
+            "L'immagine non si scarica senza credenziali. Come procedo?",
             [
                 "Creo un pull secret con utente e token del registro",
                 "Proseguo lo stesso (l'ho resa pubblica nel frattempo)",
                 "Interrompi",
             ],
+            help=f"{image}\n\nDi solito il pacchetto nel registro è ancora privato.",
         )
         if choice == 2:
             raise Fail("installazione interrotta, nessuna modifica al cluster")
@@ -1637,22 +2331,8 @@ class Installer:
         }
         self.kubectl("create", "-f", "-", input=json.dumps(manifest))
 
-    def apply_secret(self, name: str, data: dict, kind: str = "Opaque") -> None:
+    def apply_object(self, manifest: dict) -> None:
         # Server-side apply: niente copia dei dati nell'annotazione last-applied.
-        manifest = {
-            "apiVersion": "v1",
-            "kind": "Secret",
-            "type": kind,
-            "metadata": {
-                "name": name,
-                "namespace": self.ns,
-                "labels": {
-                    "app.kubernetes.io/managed-by": MANAGED_BY,
-                    "app.kubernetes.io/instance": self.release,
-                },
-            },
-            "data": {k: base64.b64encode(v.encode()).decode() for k, v in data.items()},
-        }
         self.kubectl(
             "apply",
             "--server-side",
@@ -1661,6 +2341,23 @@ class Installer:
             "-f",
             "-",
             input=json.dumps(manifest),
+        )
+
+    def labels(self) -> dict:
+        return {
+            "app.kubernetes.io/managed-by": MANAGED_BY,
+            "app.kubernetes.io/instance": self.release,
+        }
+
+    def apply_secret(self, name: str, data: dict, kind: str = "Opaque") -> None:
+        self.apply_object(
+            {
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "type": kind,
+                "metadata": {"name": name, "namespace": self.ns, "labels": self.labels()},
+                "data": {k: base64.b64encode(v.encode()).decode() for k, v in data.items()},
+            }
         )
 
     def apply_labels(self, nodes, assignment) -> None:
@@ -1685,39 +2382,128 @@ class Installer:
             return str(local)
         raise Fail("chart non trovato: usa l'installer di una release o --chart")
 
-    def helm_apply(self, values: dict) -> None:
+    def helm_apply(self, values: dict, action: str) -> str | None:
+        """Installa o aggiorna la release; restituisce il numero di revisione di Helm."""
         image = self.args.image or RELEASE.get("image")
         if image:
             values = {**values, "image": {**values.get("image", {}), **split_image(image)}}
         path = self.tmp / "values.json"
         path.write_text(json.dumps(values, indent=2))
-        self.helm("upgrade", "--install", self.release, self.chart(), "-f", str(path))
+        description = f"{who_text(self.kube_user)}: {action}"[:200]
+        self.helm(
+            "upgrade",
+            "--install",
+            self.release,
+            self.chart(),
+            "-f",
+            str(path),
+            "--description",
+            description,
+        )
+        status = self.helm("status", self.release, "-o", "json", check=False)
+        try:
+            return str(json.loads(status.stdout)["version"])
+        except (ValueError, KeyError):
+            return None
+
+    # --- storico
+    def history_name(self) -> str:
+        return f"{self.release}-history"
+
+    def read_history(self) -> list[dict]:
+        proc = self.kubectl(
+            "get", "configmap", self.history_name(), "-o", "json", ns=True, check=False
+        )
+        if proc.returncode != 0:
+            return []
+        text = (json.loads(proc.stdout).get("data") or {}).get(HISTORY_KEY, "")
+        return parse_history(text)
+
+    def record(self, action: str, changes: list, note: str | None = None, revision=None) -> None:
+        """Aggiunge una voce allo storico delle modifiche (ConfigMap nel namespace di SAGE)."""
+        entry = history_entry(action, changes, note, self.kube_user, revision)
+        entries = (self.read_history() + [entry])[-HISTORY_MAX:]
+        self.apply_object(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": self.history_name(),
+                    "namespace": self.ns,
+                    "labels": self.labels(),
+                },
+                "data": {
+                    HISTORY_KEY: "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries)
+                },
+            }
+        )
+
+    def show_history(self) -> None:
+        ui = self.ui
+        entries = list(reversed(self.read_history()))
+        if not entries:
+            ui.choose("Storico delle modifiche", ["Indietro"], help="Nessuna voce registrata.")
+            return
+        while True:
+            options = ["Indietro"] + [history_line(e) for e in entries]
+            pick = ui.choose(
+                "Storico delle modifiche",
+                options,
+                help="Dalla più recente. Scegli una voce per vederne i dettagli.",
+            )
+            if pick == 0:
+                return
+            ui.choose(
+                history_line(entries[pick - 1]),
+                ["Indietro"],
+                help=history_details(entries[pick - 1]),
+            )
 
     # --- azioni
     def toggle_live(self, current: dict) -> int:
         ui = self.ui
         values = copy.deepcopy(current)
         if not current.get("dryRun", True):
+            note = self.ask_note()
             values["dryRun"] = True
-            self.helm_apply(values)
+            revision = self.helm_apply(values, "ritorno alla simulazione")
+            self.record("ritorno alla simulazione", ["dryRun: false → true"], note, revision)
             ui.ok("tornato in simulazione: nessuna remediation verrà avviata")
             return 0
-        ui.warn(
-            "nella modalità reale SAGE applica le remediation: cordon, drain, aggiornamenti "
-            "e riavvii, un nodo alla volta, prima il canary di ogni gruppo."
-        )
-        if not ui.yes("Passo al vivo?", False):
+        if not ui.yes(
+            "Passo al vivo?",
+            False,
+            help=(
+                "Nella modalità reale SAGE applica le remediation: cordon, drain, "
+                "aggiornamenti e riavvii, un nodo alla volta, prima il canary di ogni gruppo. "
+                "Un errore ferma tutto finché una persona non controlla."
+            ),
+        ):
             return 0
+        note = self.ask_note()
         values["dryRun"] = False
-        self.helm_apply(values)
+        revision = self.helm_apply(values, "passaggio al vivo")
+        self.record("passaggio al vivo", ["dryRun: true → false"], note, revision)
         ui.ok("modalità reale attiva dal prossimo giro")
+        return 0
+
+    def toggle_suspend(self, current: dict) -> int:
+        values = copy.deepcopy(current)
+        values["suspend"] = not current.get("suspend", True)
+        action = "giri sospesi" if values["suspend"] else "giri riattivati"
+        note = self.ask_note()
+        revision = self.helm_apply(values, action)
+        change = f"suspend: {json.dumps(not values['suspend'])} → {json.dumps(values['suspend'])}"
+        self.record(action, [change], note, revision)
+        self.ui.ok(action)
         return 0
 
     def run_now(self) -> int:
         ui = self.ui
         job = f"{self.release}-manual-{time.strftime('%m%d%H%M%S')}"
         self.kubectl("create", "job", f"--from=cronjob/{self.release}-scan", job, ns=True)
-        ui.info(f"Giro avviato (job {job}), attendo il pod...")
+        self.record("giro manuale", [f"job {job}"])
+        ui.busy(f"Giro avviato (job {job}), attendo il pod...")
         deadline = time.time() + 300
         while time.time() < deadline:
             pods = self.kjson("get", "pods", "-l", f"job-name={job}", ns=True).get("items", [])
@@ -1743,6 +2529,9 @@ class Installer:
                 f"il pod del job {job} non è partito in 5 minuti: "
                 f"kubectl -n {self.ns} describe job {job}"
             )
+        # Il log va nel terminale normale, dove resta leggibile.
+        ui.close()
+        print(f"\nLog del giro (job {job}):\n")
         cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
         subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
         result = self.kjson("get", "job", job, ns=True).get("status", {})
@@ -1768,13 +2557,20 @@ class Installer:
             ns=True,
         ).get("items", [])
         running = [j["metadata"]["name"] for j in active if j.get("status", {}).get("active")]
+        help = (
+            "Toglie SAGE dal cluster, la sua chiave dai nodi e le etichette dei gruppi. "
+            "Lo storico delle modifiche viene salvato anche in un file qui."
+        )
         if running:
-            ui.warn(
-                "remediation in corso (" + ", ".join(running) + "): un nodo potrebbe "
-                "restare in cordon se interrompi ora."
+            help += (
+                "\n\nATTENZIONE: remediation in corso (" + ", ".join(running) + "): un nodo "
+                "potrebbe restare in cordon se interrompi ora."
             )
-        if not ui.yes("Disinstallo SAGE?", False):
+        if not ui.yes("Disinstallo SAGE?", False, help=help):
             return 0
+        note = self.ask_note()
+        ui.busy("Disinstallo SAGE...")
+        self.record("disinstallazione", [], note)
         nodes = parse_nodes(self.kjson("get", "nodes"))
         labelled = [n for n in nodes if GROUP_LABEL in n.labels]
         secret = self.read_secret(f"{self.release}-ssh")
@@ -1787,11 +2583,10 @@ class Installer:
             known_hosts = self.tmp / "known_hosts"
             known_hosts.write_text(secret.get("known_hosts", ""))
             public = run(["ssh-keygen", "-y", "-f", str(key)]).stdout.strip()
-            results = self.parallel(
+            for n, proc in self.parallel(
                 labelled,
                 lambda n: self.ssh(n.ip, remove_key_command(public), user, key, known_hosts),
-            )
-            for n, proc in results:
+            ):
                 if proc.returncode == 0:
                     ui.ok(f"{n.name}: chiave di SAGE rimossa")
                 else:
@@ -1804,9 +2599,17 @@ class Installer:
         self.helm("uninstall", self.release)
         for job in active:
             self.kubectl("delete", "job", job["metadata"]["name"], ns=True, check=False)
+        # Copia locale dello storico: il namespace (e la ConfigMap) può sparire.
+        saved = Path.cwd() / f"sage-storico-{self.release}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+        history = self.read_history()
+        saved.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in history))
+        ui.ok(f"storico salvato in {saved}")
         ns = self.kjson("get", "namespace", self.ns)
         ours = ns["metadata"].get("labels", {}).get("app.kubernetes.io/managed-by") == MANAGED_BY
-        if ours and ui.yes(f"Elimino anche il namespace {self.ns} (stato, report, segreti)?"):
+        if ours and ui.yes(
+            f"Elimino anche il namespace {self.ns}?",
+            help="Contiene stato, report, segreti e storico di SAGE (lo storico è già salvato).",
+        ):
             self.kubectl("delete", "namespace", self.ns, "--wait=false")
         else:
             for suffix in ("state", "report", "llm-cache", "resume"):
@@ -1839,7 +2642,7 @@ def parse_args(argv=None):
         help="chart da usare: cartella o .tgz (default: quello della release o della repo)",
     )
     p.add_argument("--ssh-port", type=int, help="porta SSH dei nodi (default: 22)")
-    p.add_argument("--no-tui", action="store_true", help="liste numerate invece dei menu")
+    p.add_argument("--no-tui", action="store_true", help="domande su righe, senza schermo intero")
     p.add_argument(
         "--version", action="version", version=RELEASE.get("version", "copia locale della repo")
     )
@@ -1853,18 +2656,19 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     term_ok = os.environ.get("TERM", "dumb") != "dumb"
-    ui = UI(
-        tui=interactive and term_ok and not args.no_tui,
-        color=interactive and term_ok and "NO_COLOR" not in os.environ,
-    )
+    color = interactive and term_ok and "NO_COLOR" not in os.environ
+    ui = ScreenUI(color) if interactive and term_ok and not args.no_tui else LineUI(color)
     try:
         return Installer(args, ui).run()
     except Fail as e:
         ui.error(str(e))
         return 1
     except (KeyboardInterrupt, EOFError):
+        ui.close()
         print("\ninterrotto")
         return 130
+    finally:
+        ui.close()
 
 
 if __name__ == "__main__":
