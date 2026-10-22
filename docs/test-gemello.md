@@ -37,7 +37,8 @@ sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage
 Al primo avvio chiede di installarsi come comando di sistema (`/usr/local/bin/sage`): da lì in
 poi basta `sage`, e il file scaricato si può cancellare. Se `/tmp` è montata `noexec` (baseline
 CIS): `TMPDIR=~/.cache sage`.
-Opzioni: `--live` per partire subito in modalità reale, `--allow-remove` per permettere la
+Opzioni: `--live` per partire subito in modalità reale (su un'installazione esistente: passa al
+vivo), `--reinstall` per rifare l'installazione da zero tenendo storico e cache dell'LLM, `--allow-remove` per permettere la
 rimozione dei pacchetti inutilizzati, `--dashboard` per aprire la dashboard, `--resume` per
 vedere il giro in corso e seguire il log del lavoro attuale.
 

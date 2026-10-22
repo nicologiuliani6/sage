@@ -32,9 +32,10 @@ sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage && ./sage
 Un eseguibile unico, senza Python sul master: al primo avvio si installa come comando di
 sistema (`/usr/local/bin/sage`), poi da qualsiasi cartella basta `sage`
 ([ADR-0016](docs/adr/0016-installer-eseguibile-unico.md)).
-Opzioni: `--live` (modalità reale da subito), `--allow-remove` (rimozione dei pacchetti
-inutilizzati), `--dashboard` (apre la dashboard), `--resume` (giro in corso e log del lavoro
-attuale).
+Opzioni: `--live` (modalità reale: da subito su una nuova installazione, passaggio al vivo su
+una esistente), `--reinstall` (rifà l'installazione da zero, tenendo storico e cache dell'LLM),
+`--allow-remove` (rimozione dei pacchetti inutilizzati), `--dashboard` (apre la dashboard),
+`--resume` (giro in corso e log del lavoro attuale). Esempio: `sage --reinstall --live`.
 
 L'installer occupa il terminale e fa una domanda per pagina: mostra i nodi e fa scegliere quali
 gestire, propone i gruppi dai dati di Kubernetes (modificabili in una vista a colonne), crea e

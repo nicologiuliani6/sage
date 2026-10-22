@@ -24,7 +24,9 @@ di Python presente. Si vuole un solo file da scaricare, verificare con il checks
 - **Comando di sistema**: al primo avvio l'eseguibile chiede di installarsi in
   `/usr/local/bin/sage` (`--bin` per un'altra cartella) con `sudo -n install`; se lì c'è già
   una copia diversa la aggiorna. Da quel momento si usa `sage` da qualsiasi cartella.
-- Opzioni da riga di comando per i casi frequenti: `--live` (modalità reale da subito),
+- Opzioni da riga di comando per i casi frequenti: `--live` (modalità reale da subito; su
+  un'installazione esistente passa al vivo, con conferma), `--reinstall` (toglie la
+  configurazione e la rifà da zero, tenendo storico e cache dell'LLM),
   `--allow-remove` (rimozioni attive in tutti i gruppi), `--dashboard` (apre subito la
   dashboard), `--resume` (stato del giro e log di quello che SAGE sta facendo adesso). Ogni
   modifica fatta con queste opzioni finisce nello storico come le altre (ADR-0012).

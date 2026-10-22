@@ -797,9 +797,14 @@ class EndToEnd(unittest.TestCase):
                 raise AssertionError("risposte finite, ultima domanda: " + prompt)
             return answers.pop(0)
 
-        with mock.patch("builtins.input", fake_input), mock.patch("builtins.print"):
+        printed = []
+        with (
+            mock.patch("builtins.input", fake_input),
+            mock.patch("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))),
+        ):
             code = inst.main(["--no-tui", "--image", IMAGE, *args])
-        self.assertEqual(answers, [], "risposte non usate")
+        output += printed[-3:]  # nel messaggio d'errore: anche le ultime righe stampate
+        self.assertEqual(answers, [], "risposte non usate: " + " | ".join(output[-4:]))
         return code, output
 
     def test_install_reconfigure_live_uninstall(self):
@@ -958,6 +963,35 @@ class EndToEnd(unittest.TestCase):
                 "disinstallazione",
             ],
         )
+
+    def test_reinstall_live_keeps_history_and_llm_cache(self):
+        install = ["", "admin", "2", "", "2", "", "Europe/Rome", "", "", "", "n"]
+        code, prompts = self.run_installer(install)
+        self.assertEqual(code, 0, prompts)
+        self.assertTrue(self.read_state()["helm"]["values"]["dryRun"])
+        old_key = self.read_state()["secrets"]["sage-ssh"]["data"]["id_ed25519"]
+
+        # Installazione esistente + --live: passa al vivo direttamente (con conferma).
+        code, _ = self.run_installer(["s", "via"], args=("--live",))
+        self.assertEqual(code, 0)
+        self.assertFalse(self.read_state()["helm"]["values"]["dryRun"])
+        self.assertEqual(self.history()[-1]["action"], "passaggio al vivo")
+
+        # --reinstall --live: tolta la configurazione, rifatta da zero in modalità reale.
+        code, prompts = self.run_installer(
+            ["s", "da capo"] + install, args=("--reinstall", "--live")
+        )
+        self.assertEqual(code, 0, prompts)
+        state = self.read_state()
+        self.assertFalse(state["helm"]["values"]["dryRun"])
+        self.assertNotEqual(state["secrets"]["sage-ssh"]["data"]["id_ed25519"], old_key)
+        deleted = [" ".join(d) for d in state["deleted"]]
+        self.assertTrue(any("sage-controller" in d for d in deleted))
+        self.assertFalse(any("llm-cache" in d or "sage-history" in d for d in deleted))
+        self.assertFalse(any(d.startswith("namespace") for d in deleted))
+        actions = [e["action"] for e in self.history()]
+        self.assertIn("reinstallazione: tolta la configurazione", actions)
+        self.assertEqual(actions[-1], "installazione")
 
     def test_flags_live_remove_resume_dashboard(self):
         # --live e --allow-remove: modalità reale e rimozioni da subito, scritte nello storico.
