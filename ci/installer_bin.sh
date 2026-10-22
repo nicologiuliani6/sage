@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installer come eseguibile unico per linux amd64 (PyInstaller, ADR-0016): sui master non
-# serve Python. Compilato in manylinux2014 (glibc 2.17), poi provato su Rocky Linux 8 e 9
-# in container senza Python.
+# serve Python. Compilato su Rocky Linux 8 (glibc 2.28), poi provato su Rocky Linux 8 e 9
+# in container senza niente nel PATH.
 # Uso: ci/installer_bin.sh SORGENTE.py CARTELLA_DI_USCITA  -> CARTELLA/sage-install
 source "$(dirname "$0")/lib.sh"
 src="$1"
@@ -11,7 +11,7 @@ work=$(mktemp -d)
 cp "$src" "$work/sage-install.py"
 cp ci/installer-build.txt "$work/requirements.txt"
 cp ci/installer_build_inside.sh "$work/build.sh"
-checked docker run --rm -v "$work:/build" "$MANYLINUX_IMAGE" bash /build/build.sh
+checked docker run --rm -v "$work:/build" "$ROCKY8_IMAGE" bash /build/build.sh
 cp "$work/dist/sage-install" "$out/sage-install"
 for image in "$ROCKY9_IMAGE" "$ROCKY8_IMAGE"; do
   # PATH vuoto: nessun Python né altri strumenti a disposizione dell'eseguibile.

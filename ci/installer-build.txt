@@ -1,7 +1,7 @@
 # Strumenti per compilare l'installer in un eseguibile unico (ci/installer_bin.sh).
 # Versioni e hash fissati (ADR-0008). Rigenerare con:
 #   uv pip compile <(echo pyinstaller) --generate-hashes --python-version 3.12 \
-#     --python-platform x86_64-manylinux_2_17 -o ci/installer-build.txt
+#     --python-platform x86_64-manylinux_2_28 -o ci/installer-build.txt
 altgraph==0.17.5 \
     --hash=sha256:c87b395dd12fabde9c99573a9749d67da8d29ef9de0125c7f536699b4a9bc9e7 \
     --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597

@@ -13,9 +13,11 @@ di Python presente. Si vuole un solo file da scaricare, verificare con il checks
 - Il sorgente resta `installer/sage_install.py`: Python 3.9, sola libreria standard, testato con
   unittest come prima. Per ogni release la CI lo fissa (immagine, chart, Helm) e lo compila con
   **PyInstaller** in un **eseguibile unico** `sage-install` per linux amd64.
-- La compilazione avviene nell'immagine **manylinux2014** (glibc 2.17), fissata per digest:
-  l'eseguibile gira su Rocky e RHEL 8 e 9 e sulle altre distro recenti. PyInstaller e le sue
-  dipendenze sono installati con versioni e hash fissati (`ci/installer-build.txt`).
+- La compilazione avviene in un container **Rocky Linux 8** (glibc 2.28) fissato per digest, con
+  il Python 3.12 dei repository Rocky (pacchetti firmati, con la libreria condivisa che
+  PyInstaller richiede): l'eseguibile gira su Rocky e RHEL 8 e 9 e sulle distro recenti.
+  PyInstaller e le sue dipendenze hanno versioni e hash fissati (`ci/installer-build.txt`).
+  Le immagini manylinux sono state scartate: il loro Python non ha la libreria condivisa.
 - La CI prova l'eseguibile in container Rocky Linux 8 e 9 senza nessun programma nel `PATH`
   (quindi senza Python), e con `/tmp` montata `noexec` usando `TMPDIR` (baseline CIS).
 - La release pubblica `sage-install`, `sage-install.py` (per altre architetture) e i checksum.
