@@ -104,6 +104,7 @@ openssh-server|/usr/sbin/sshd
 openssh-server|/usr/lib/systemd/system/sshd.service
 bash|/bin/sh
 cockpit-ws|/usr/lib/systemd/system/cockpit.socket
+glibc|/lib64/libc.so.6
 """
 RPM_REQUIRES = """\
 NetworkManager|libnm-helper.so.1()(64bit)
@@ -129,24 +130,35 @@ UNIT_FILES = {
 
 
 def systemctl_show(units):
+    """Come systemd: le proprietà del servizio (ExecStart) prima di quelle della unit."""
     blocks = []
     for unit in units:
         fragment, exe = UNIT_FILES.get(unit, ("", ""))
         exec_start = f"{{ path={exe} ; argv[]={exe} ; }}" if exe else ""
-        blocks.append(f"Id={unit}\nFragmentPath={fragment}\nExecStart={exec_start}\n")
+        blocks.append(f"ExecStart={exec_start}\nId={unit}\nFragmentPath={fragment}\n")
     return "\n".join(blocks)
+
+
+def rpm_iterate(qf, rows):
+    """rpm rifiuta un valore singolo dentro [] se non è scritto %{=TAG}."""
+    if "[%{NAME}" in qf:
+        return "error: array iterator used with different sized arrays\n"
+    return rows
 
 
 def fake_run(cmd):
     if cmd[:2] == ["rpm", "-qa"]:
         qf = cmd[3]
         if "PROVIDENAME" in qf:
-            return RPM_PROVIDES
+            return rpm_iterate(qf, RPM_PROVIDES)
         if "FILENAMES" in qf:
-            return RPM_FILES
+            return rpm_iterate(qf, RPM_FILES)
         if "REQUIRENAME" in qf:
-            return RPM_REQUIRES
-        return "NetworkManager\nlibnm-helper\nopenssh-server\nopenssl-libs\nbash\ncockpit-ws\n"
+            return rpm_iterate(qf, RPM_REQUIRES)
+        return "\n".join(
+            ["NetworkManager", "libnm-helper", "openssh-server", "openssl-libs", "bash"]
+            + ["cockpit-ws", "glibc", ""]
+        )
     if cmd[:2] == ["systemctl", "list-units"]:
         return UNITS_ACTIVE
     if cmd[:2] == ["systemctl", "list-unit-files"]:
@@ -199,6 +211,7 @@ def collector():
     spec = importlib.util.spec_from_file_location("collect_node", COLLECTOR)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    mod._merged = [("/bin/", "/usr/bin/"), ("/lib64/", "/usr/lib64/")]  # come Rocky 9
     return mod
 
 
@@ -206,8 +219,11 @@ def run_collector(collector, monkeypatch, capsys, argv=()):
     monkeypatch.setattr(collector, "run", fake_run)
     monkeypatch.setattr(collector, "read_file", lambda p: KERNEL_FILES.get(p, ""))
     monkeypatch.setattr(
-        collector, "running_state", lambda: ({"42": "/usr/sbin/NetworkManager"}, set(), 3)
+        collector,
+        "running_state",
+        lambda: ({"42": "/usr/sbin/NetworkManager"}, {"/usr/lib64/libc.so.6"}, 3),
     )
+    monkeypatch.setattr(collector.os.path, "exists", lambda p: False)
     monkeypatch.setattr(collector.platform, "release", lambda: "5.14.0-500.el9.x86_64")
     monkeypatch.setattr(collector.platform, "machine", lambda: "x86_64")
     collector.main(list(argv))
@@ -220,7 +236,7 @@ def report(collector, monkeypatch, capsys):
 
 
 def test_summary(report):
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
     assert report["summary"] == {"advisories": 5, "packages": 4, "cves": 3}
     assert report["node"]["os"] == {"name": "Rocky Linux", "version": "9.4"}
 
@@ -319,7 +335,9 @@ def test_node_profile(report):
         "openssh-server": "sshd.service",
         "openssl-libs": "sshd.service",
     }
+    assert profile["unit_files"] == 3 and profile["seeds"] == 2
     assert profile["container_processes"] == 3
+    assert profile["process_scan_ok"] is True
     assert profile["extra"] == [] and profile["extra_missing"] == []
     assert report["packages"]["NetworkManager"]["context"]["needed_by"] == "NetworkManager.service"
     assert report["packages"]["cockpit-ws"]["context"]["needed_by"] is None
@@ -375,3 +393,54 @@ def test_source_package(report, collector):
     assert collector.source_name("glibc-2.34-100.el9_4.2.src.rpm\n") == "glibc"
     assert collector.source_name("(none)\n") is None
     assert collector.source_name("") is None
+
+
+def test_merged_paths(collector, tmp_path):
+    """rpm scrive /lib64/libc.so.6, il kernel /usr/lib64/libc.so.6: è lo stesso file."""
+    (tmp_path / "usr" / "lib64").mkdir(parents=True)
+    (tmp_path / "lib64").symlink_to("usr/lib64")
+    (tmp_path / "etc").mkdir()
+    assert collector.merged_prefixes(str(tmp_path)) == [("/lib64/", "/usr/lib64/")]
+    assert collector.canonical("/lib64/libc.so.6") == "/usr/lib64/libc.so.6"
+    assert collector.canonical("/bin/sh") == "/usr/bin/sh"
+    assert collector.canonical("/usr/lib64/libc.so.6") == "/usr/lib64/libc.so.6"
+
+
+def test_library_listed_under_lib64_is_loaded(collector, monkeypatch):
+    monkeypatch.setattr(
+        collector,
+        "run",
+        lambda cmd: "/lib64/libc.so.6\n/usr/sbin/ldconfig\n" if cmd[:2] == ["rpm", "-ql"] else "",
+    )
+    ctx = collector.package_context("glibc", {}, {"/usr/lib64/libc.so.6"}, {})
+    assert ctx["libraries_loaded"] == ["/usr/lib64/libc.so.6"]
+    assert ctx["idle"] is False
+
+
+def test_unreliable_process_scan_never_idle(collector, monkeypatch, capsys):
+    monkeypatch.setattr(collector, "run", fake_run)
+    monkeypatch.setattr(collector, "read_file", lambda p: KERNEL_FILES.get(p, ""))
+    monkeypatch.setattr(collector, "running_state", lambda: ({}, set(), 0))
+    monkeypatch.setattr(collector.os.path, "exists", lambda p: False)
+    collector.main([])
+    report = json.loads(capsys.readouterr().out)
+    assert report["profile"]["process_scan_ok"] is False
+    assert not any(p["context"]["idle"] for p in report["packages"].values())
+
+
+def test_unit_paths_order_and_templates(collector, monkeypatch):
+    out = (
+        "ExecStart={ path=/usr/sbin/sshd ; argv[]=/usr/sbin/sshd -D ; }\n"
+        "Id=sshd.service\nFragmentPath=/usr/lib/systemd/system/sshd.service\n\n"
+        "Id=chronyd.timer\nFragmentPath=\n\n"
+        "ExecStart={ path=/bin/sh ; argv[]=/bin/sh -c x ; }\nId=other.service\n"
+    )
+    monkeypatch.setattr(collector, "run", lambda cmd: out)
+    monkeypatch.setattr(
+        collector.os.path, "exists", lambda p: p == "/usr/lib/systemd/system/getty@.service"
+    )
+    paths = collector.unit_paths({"sshd.service", "chronyd.timer", "getty@tty1.service"})
+    assert paths["sshd.service"] == ["/usr/lib/systemd/system/sshd.service", "/usr/sbin/sshd"]
+    assert paths["chronyd.timer"] == []
+    assert paths["getty@tty1.service"] == ["/usr/lib/systemd/system/getty@.service"]
+    assert "other.service" not in paths  # non chiesta

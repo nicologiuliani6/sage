@@ -118,8 +118,10 @@ altri worker; i master per ultimi e il kernel solo nella finestra.
   creare all'installer un pull secret.
 - **KEV, EPSS o record CVE non disponibili**: i pod non escono su Internet. Rilancia l'installer
   e indica il proxy. Senza KEV SAGE non dichiara nulla "non affetto" (è voluto).
-- **Errori 429 da Groq**: aumenta `config.llm.min_interval_seconds` o abbassa
-  `max_calls_per_run` (valori Helm).
+- **Errori 429 dall'LLM**: SAGE aspetta e riprova da solo. Le CVE rimaste senza risposta
+  vengono analizzate ai giri successivi (le risposte restano in cache).
+- **Riepilogo con "ATTENZIONE"** nella riga del profilo: il collector non è riuscito a leggere
+  processi o servizi del nodo. In quel caso nessun pacchetto viene dichiarato inattivo.
 - **Disinstallare**: installer → *Disinstalla SAGE*. Toglie anche la chiave dai nodi e le
   etichette `sage.io/group`.
 
