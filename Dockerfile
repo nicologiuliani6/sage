@@ -22,7 +22,10 @@ WORKDIR /opt/sage
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable && rm -rf /root/.cache
+# Versione della release, dal tag (ci/publish.sh); vuota nelle build di sviluppo.
+ARG SAGE_VERSION=""
 ENV PATH="/opt/sage/.venv/bin:${PATH}" \
+    SAGE_VERSION=${SAGE_VERSION} \
     ANSIBLE_CONFIG=/opt/sage/ansible/ansible.cfg \
     ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections \
     ANSIBLE_LOCAL_TEMP=/tmp/ansible \
