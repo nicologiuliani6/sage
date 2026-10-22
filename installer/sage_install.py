@@ -2576,6 +2576,15 @@ class Installer:
     def chart(self) -> str:
         if self.args.chart:
             return self.args.chart
+        if RELEASE.get("chart_b64"):
+            # Chart dentro l'installer: niente download, e nessun disallineamento possibile
+            # tra installer e chart pubblicati (es. una release compilata due volte).
+            data = base64.b64decode(RELEASE["chart_b64"])
+            if hashlib.sha256(data).hexdigest() != RELEASE.get("chart_sha256"):
+                raise Fail("chart incluso nell'installer danneggiato: riscarica l'installer")
+            path = self.tmp / "sage-chart.tgz"
+            path.write_bytes(data)
+            return str(path)
         if RELEASE.get("chart_url"):
             data = download(RELEASE["chart_url"], RELEASE.get("chart_sha256"))
             path = self.tmp / "sage-chart.tgz"

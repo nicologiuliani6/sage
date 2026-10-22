@@ -5,6 +5,8 @@ Uso: python3 ci/stamp_installer.py SORGENTE DESTINAZIONE chiave=valore...
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -21,6 +23,10 @@ def stamp(source: str, data: dict[str, str]) -> str:
         raise ValueError(f"mancano: {', '.join(missing)}")
     if "@sha256:" not in data["image"]:
         raise ValueError("l'immagine va indicata per digest (repo@sha256:...)")
+    if "chart_b64" in data:
+        chart = base64.b64decode(data["chart_b64"], validate=True)
+        if hashlib.sha256(chart).hexdigest() != data["chart_sha256"]:
+            raise ValueError("chart_b64 non corrisponde a chart_sha256")
     lines = source.splitlines(keepends=True)
     hits = [i for i, line in enumerate(lines) if line.rstrip().endswith(MARKER)]
     if len(hits) != 1:
