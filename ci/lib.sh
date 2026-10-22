@@ -1,6 +1,9 @@
 # shellcheck shell=bash
 # Funzioni comuni degli script della CI. Si usa con `source ci/lib.sh`.
-set -euo pipefail
+set -Eeuo pipefail
+# Su errore, un'annotazione con il comando fallito: si legge anche dall'API (check-runs),
+# senza scaricare i log.
+trap 'echo "::error title=${0##*/}::comando fallito (exit $?): ${BASH_COMMAND}"' ERR
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck source=ci/versions.sh
 source ci/versions.sh
@@ -19,4 +22,19 @@ install_opa() {
   echo "${OPA_SHA256}  $TOOLS/opa" | sha256sum -c -
   chmod +x "$TOOLS/opa"
   export SAGE_OPA_BIN="$TOOLS/opa"
+}
+
+# Esegue un comando; se fallisce, ne riporta le ultime righe di output in un'annotazione.
+checked() {
+  local out rc=0
+  out=$("$@" 2>&1) || rc=$?
+  echo "$out"
+  if [ "$rc" -ne 0 ]; then
+    local tail
+    tail=$(echo "$out" | tail -n 25)
+    tail=${tail//'%'/'%25'}
+    tail=${tail//$'\n'/'%0A'}
+    echo "::error title=${0##*/}::$* (exit $rc)%0A${tail}"
+    return "$rc"
+  fi
 }

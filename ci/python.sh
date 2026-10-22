@@ -11,11 +11,11 @@ uv run ansible-galaxy collection install -r ansible/requirements.yml
 (cd ansible \
   && uv run ansible-playbook --syntax-check -i localhost, collect.yml \
   && uv run ansible-playbook --syntax-check -i localhost, remediate.yml)
-uv run pytest -v -rs | tee "$TOOLS/pytest.log"
+checked uv run pytest -v -rs | tee "$TOOLS/pytest.log"
 if grep -q "SKIPPED" "$TOOLS/pytest.log"; then
   echo "test saltati in CI: devono girare tutti" && exit 1
 fi
 uv run --no-project --python 3.9 python -c \
   "import ast; ast.parse(open('ansible/files/collect_node.py').read())"
-uv run --no-project --python 3.9 python -m unittest -v tests.test_installer
+checked uv run --no-project --python 3.9 python -m unittest -v tests.test_installer
 uv run sage check-config --config examples/config.example.yaml

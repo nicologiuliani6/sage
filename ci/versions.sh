@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2034
 # Il nome non finisce in .env: .gitignore esclude i file .env (segreti locali).
 # Versioni e checksum degli strumenti usati dalla CI (ADR-0008).
 # Quando aggiorni una versione, aggiorna anche il checksum.
