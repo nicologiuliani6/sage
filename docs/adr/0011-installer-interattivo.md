@@ -14,11 +14,18 @@ gestire e prepari tutto il resto.
 - **Un file Python** (`installer/sage_install.py`) con la sola libreria standard e compatibile con
   Python 3.9, lo stesso vincolo del collector: sui master di produzione c'è il Python di sistema,
   non pip. Si lancia da un master o da qualsiasi macchina con `kubectl` da amministratore.
-- **Interattivo**: liste con caselle (frecce, spazio, invio) fatte con `termios` e sequenze ANSI.
-  Se il terminale non è interattivo si ripiega su liste numerate.
+- **A schermo intero, una domanda per pagina**: schermo alternativo del terminale, liste con
+  caselle, menu, campi di testo (le chiavi mascherate) e una vista a colonne per spostare i nodi
+  tra i gruppi, fatti con `termios` e sequenze ANSI. Alla chiusura ristampa i messaggi nel
+  terminale normale. Con `--no-tui` o senza terminale interattivo, domande su righe.
 - **Passi**: nodi (i non supportati sono visibili ma non selezionabili), accesso SSH, gruppi
-  proposti in automatico (worker, gpu con kernel manuale, master per ultimi con finestra), LLM,
-  frequenza, proxy, immagine, riepilogo e conferma. Solo dopo la conferma tocca il cluster.
+  proposti dai dati di Kubernetes (control-plane: master per ultimi con finestra; GPU: gpu con
+  kernel manuale; gli altri: worker), LLM, frequenza, proxy, immagine, riepilogo e conferma.
+  Solo dopo la conferma tocca il cluster.
+- **LLM generico**: URL e chiave di un endpoint compatibile OpenAI, modello scelto dall'elenco
+  che l'endpoint stesso fornisce. Nessun servizio predefinito e nessun limite di richieste da
+  impostare (vedi ADR-0004).
+- **Storico** di ogni modifica: vedi ADR-0012.
 - **Gruppi tramite etichetta**: l'installer mette `sage.io/group=<gruppo>` sui nodi scelti e
   configura ogni gruppo con quel selettore. I nodi senza etichetta non vengono toccati.
 - **SSH**: chiave ed25519 dedicata, creata in una cartella temporanea 0700 e salvata solo nel

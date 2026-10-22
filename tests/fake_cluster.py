@@ -71,6 +71,8 @@ def kubectl(args):
         return out({"gitVersion": "v1.34.3"})
     if a[:2] == ["auth", "can-i"]:
         return out("yes")
+    if a[:2] == ["auth", "whoami"]:
+        return out("fake-admin")
     if a[:2] == ["get", "nodes"]:
         return out({"items": [node_doc(state, n) for n in state["nodes"]]})
     if a[:3] == ["get", "svc", "kubernetes"]:
@@ -89,9 +91,13 @@ def kubectl(args):
         return out("created")
     if a[0] == "apply":
         doc = json.loads(sys.stdin.read())
-        state["secrets"][doc["metadata"]["name"]] = doc
+        store = "configmaps" if doc["kind"] == "ConfigMap" else "secrets"
+        state[store][doc["metadata"]["name"]] = doc
         save(state)
         return out("applied")
+    if a[:2] == ["get", "configmap"]:
+        cm = state["configmaps"].get(a[2])
+        return out(cm) if cm else fail(f'configmaps "{a[2]}" not found')
     if a[:2] == ["label", "node"]:
         labels = state["labels"].setdefault(a[2], {})
         spec = a[3]
@@ -129,12 +135,20 @@ def helm(args):
     state["calls"].append(["helm"] + args)
     save(state)
     if args[0] == "status":
-        return 0 if state["helm"] is not None else fail("Error: release: not found")
+        if state["helm"] is None:
+            return fail("Error: release: not found")
+        return out({"version": state["helm"]["revision"]})
     if args[:2] == ["get", "values"]:
         return out(state["helm"]["values"])
     if args[:2] == ["upgrade", "--install"]:
         values_file = args[args.index("-f") + 1]
-        state["helm"] = {"chart": args[3], "values": json.loads(Path(values_file).read_text())}
+        state["revision"] = state.get("revision", 0) + 1
+        state["helm"] = {
+            "chart": args[3],
+            "values": json.loads(Path(values_file).read_text()),
+            "description": args[args.index("--description") + 1],
+            "revision": state["revision"],
+        }
         save(state)
         return out("Release installata")
     if args[0] == "uninstall":

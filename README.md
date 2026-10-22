@@ -26,9 +26,12 @@ curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage-instal
 python3 sage-install.py
 ```
 
-L'installer mostra i nodi e fa scegliere quali gestire (frecce, spazio, invio), propone i gruppi,
-crea e installa la chiave SSH dedicata, configura l'LLM, installa il chart con Helm e lancia un
-primo giro in simulazione. Rilanciato, riconfigura, passa al vivo, sospende o disinstalla.
+L'installer occupa il terminale e fa una domanda per pagina: mostra i nodi e fa scegliere quali
+gestire, propone i gruppi dai dati di Kubernetes (modificabili in una vista a colonne), crea e
+installa la chiave SSH dedicata, configura l'LLM (qualsiasi endpoint compatibile OpenAI),
+installa il chart con Helm e lancia un primo giro in simulazione. Rilanciato, riconfigura, passa
+al vivo, sospende o disinstalla; ogni modifica finisce in uno storico con chi, quando e perché
+([ADR-0012](docs/adr/0012-storico-delle-modifiche.md)).
 Funziona con nodi della famiglia RHEL (la remediation usa dnf). Dettagli:
 [ADR-0011](docs/adr/0011-installer-interattivo.md); passi completi nella
 [guida al test](docs/test-gemello.md).
