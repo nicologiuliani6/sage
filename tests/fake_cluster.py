@@ -120,6 +120,10 @@ def kubectl(args):
         return out({"status": {"succeeded": 1}})
     if a[:2] == ["get", "jobs"]:
         return out({"items": []})
+    if a[:2] == ["rollout", "status"]:
+        return out("deployment successfully rolled out")
+    if a[0] == "port-forward":
+        return out("Forwarding from 127.0.0.1")  # in realtà resta aperto fino a Ctrl+C
     if a[0] == "delete":
         state["deleted"].append(a[1:])
         save(state)

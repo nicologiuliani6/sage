@@ -45,6 +45,7 @@ class KubeApi(Protocol):
     def list_jobs(self, label_selector: str) -> list[JobInfo]: ...
     def create_job(self, manifest: dict[str, Any]) -> None: ...
     def pop_flag(self, name: str) -> bool: ...
+    def cronjob(self, name: str) -> dict[str, Any] | None: ...
 
 
 def encode(data: dict[str, Any]) -> str:
@@ -164,6 +165,30 @@ class Kube:
             return False
         self.core.delete_namespaced_config_map(name, self.namespace)
         return True
+
+    def cronjob(self, name: str) -> dict[str, Any] | None:
+        """Pianificazione e ultime esecuzioni del CronJob `name`."""
+        from kubernetes.client.exceptions import ApiException
+
+        try:
+            cj = self.batch.read_namespaced_cron_job(name, self.namespace)
+        except ApiException as exc:
+            if exc.status == 404:
+                return None
+            raise
+        status = cj.status
+
+        def iso(value: Any) -> str | None:
+            return value.isoformat() if value else None
+
+        return {
+            "schedule": cj.spec.schedule,
+            "time_zone": cj.spec.time_zone,
+            "suspend": bool(cj.spec.suspend),
+            "last_schedule": iso(status.last_schedule_time if status else None),
+            "last_success": iso(status.last_successful_time if status else None),
+            "active": len(status.active or []) if status else 0,
+        }
 
 
 def _incluster_namespace() -> str:

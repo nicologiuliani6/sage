@@ -881,12 +881,19 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(update["action"], "aggiornamento")
         self.assertIn("immagine: " + IMAGE + " → " + new_image, update["changes"])
 
+        # Dashboard: port-forward solo su 127.0.0.1, porta locale scelta.
+        code, _ = self.run_installer(["6"], args=("--image", new_image, "--dashboard-port", "9090"))
+        self.assertEqual(code, 0)
+        forward = [c for c in self.read_state()["calls"] if "port-forward" in c][-1]
+        self.assertEqual(forward[-3:], ["127.0.0.1", "deploy/sage-dashboard", "9090:8080"])
+        self.assertIn("--address", forward)
+
         # Storico dal menu: voce più recente, dettagli, indietro, esci.
-        code, _ = self.run_installer(["6", "2", "1", "1", "8"], args=("--image", new_image))
+        code, _ = self.run_installer(["7", "2", "1", "1", "9"], args=("--image", new_image))
         self.assertEqual(code, 0)
 
         # Disinstallazione: chiave tolta dai nodi, etichette rimosse, storico salvato.
-        code, _ = self.run_installer(["7", "s", "", ""], args=("--image", new_image))
+        code, _ = self.run_installer(["8", "s", "", ""], args=("--image", new_image))
         self.assertEqual(code, 0)
         state = self.read_state()
         self.assertIsNone(state["helm"])
