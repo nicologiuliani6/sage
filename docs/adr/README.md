@@ -20,3 +20,4 @@ si segna come sostituita e se ne scrive una nuova.
 | [0013](0013-profilo-del-nodo.md) | Profilo del nodo: servizi, dipendenze, container esclusi |
 | [0014](0014-dashboard-sola-lettura.md) | Dashboard web di sola lettura, aperta con port-forward |
 | [0015](0015-controllore-in-loop.md) | Un controllore sempre acceso che fa il giro dei nodi |
+| [0016](0016-installer-eseguibile-unico.md) | L'installer come eseguibile unico |

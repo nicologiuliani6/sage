@@ -4,6 +4,8 @@ Scritti con unittest e senza dipendenze, così la CI li esegue anche con Python 
 (il Python dei master): `python -m unittest tests.test_installer`.
 """
 
+import base64
+import gzip
 import importlib.util
 import json
 import os
@@ -957,6 +959,46 @@ class EndToEnd(unittest.TestCase):
             ],
         )
 
+    def test_flags_live_remove_resume_dashboard(self):
+        # --live e --allow-remove: modalità reale e rimozioni da subito, scritte nello storico.
+        code, prompts = self.run_installer(
+            ["", "admin", "2", "", "2", "", "Europe/Rome", "", "", "", "n"],
+            args=("--live", "--allow-remove"),
+        )
+        self.assertEqual(code, 0, prompts)
+        values = self.read_state()["helm"]["values"]
+        self.assertFalse(values["dryRun"])
+        self.assertTrue(all(g["allow_remove"] for g in values["config"]["groups"]))
+        changes = " ".join(self.history()[-1]["changes"])
+        self.assertIn("MODALITÀ REALE da subito (--live)", changes)
+
+        # --resume senza stato del controllore: lo dice e non segue nessun log.
+        code, _ = self.run_installer([], args=("--resume",))
+        self.assertEqual(code, 0)
+        # --resume con una remediation in corso: segue il log di quel Job.
+        state = self.read_state()
+        doc = {
+            "cycle": {
+                "id": 2,
+                "phase": "remediate",
+                "queue": ["w1", "w2"],
+                "results": {"w1": {"outcome": "fatto"}},
+            },
+            "nodes": {"w2": {"status": "running", "job": "sage-fix-w2-1"}},
+        }
+        blob = base64.b64encode(gzip.compress(json.dumps(doc).encode())).decode()
+        state["configmaps"]["sage-controller"] = {"binaryData": {"data.json.gz": blob}}
+        self.write_state(state)
+        code, _ = self.run_installer([], args=("--resume",))
+        self.assertEqual(code, 0)
+        logs = [c for c in self.read_state()["calls"] if "logs" in c]
+        self.assertIn("job/sage-fix-w2-1", logs[-1])
+
+        # --dashboard: dritto al port-forward, senza menu.
+        code, _ = self.run_installer([], args=("--dashboard",))
+        self.assertEqual(code, 0)
+        self.assertTrue(any("port-forward" in c for c in self.read_state()["calls"]))
+
 
 @unittest.skipUnless(hasattr(os, "openpty") and sys.platform.startswith("linux"), "serve un pty")
 class Terminal(unittest.TestCase):
@@ -1022,3 +1064,29 @@ class Terminal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Progress(unittest.TestCase):
+    def test_progress_lines(self):
+        self.assertEqual(inst.progress_lines(None)[1], None)
+        doc = {
+            "cycle": {"id": 3, "phase": "scan", "scan_job": "sage-scan-1", "queue": []},
+            "halted": True,
+            "halt_reason": "remediation fallita su w1",
+        }
+        lines, job = inst.progress_lines(doc)
+        self.assertEqual(job, "sage-scan-1")
+        self.assertIn("FERMO: remediation fallita su w1", lines)
+        pause = {
+            "cycle": {
+                "id": 4,
+                "phase": "pause",
+                "pause_until": "T",
+                "queue": ["w1"],
+                "results": {"w1": {"outcome": "niente da fare"}},
+            }
+        }
+        lines, job = inst.progress_lines(pause)
+        self.assertIsNone(job)
+        self.assertIn("  w1: niente da fare", lines)
+        self.assertIn("Prossimo giro: T", lines)

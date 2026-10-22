@@ -30,14 +30,21 @@ python3 ci/stamp_installer.py installer/sage_install.py "$dist/sage-install.py" 
   "chart_url=${base}/${chart}" "chart_sha256=${chart_sha}" \
   "helm_version=${HELM_VERSION}" "${helm_args[@]}"
 python3 "$dist/sage-install.py" --version
-(cd "$dist" && sha256sum sage-install.py "$chart" > SHA256SUMS)
+# Eseguibile unico dall'installer già fissato: sui master non serve Python.
+ci/installer_bin.sh "$dist/sage-install.py" "$dist"
+(cd "$dist" && sha256sum sage-install sage-install.py "$chart" > SHA256SUMS)
 
 cat > "$dist/notes.md" <<NOTES
 Installazione, da un master del cluster (serve kubectl con permessi di amministratore):
 
 \`\`\`bash
-curl -fsSLO ${base}/sage-install.py && python3 sage-install.py
+curl -fsSLO ${base}/sage-install && curl -fsSLO ${base}/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage-install && ./sage-install
 \`\`\`
+
+Eseguibile unico per linux amd64, senza dipendenze da Python. Opzioni utili: \`--live\`
+(modalità reale da subito), \`--allow-remove\`, \`--dashboard\`, \`--resume\` (giro in corso).
+Su altre architetture: \`sage-install.py\` con Python 3.9 o più recente.
 
 L'installer chiede quali nodi gestire, prepara chiave SSH, segreti e valori, installa il
 chart e lancia un primo giro in simulazione. Rilanciato, riconfigura, passa al vivo o
@@ -47,7 +54,7 @@ disinstalla.
 - Chart: \`${chart}\` (sha256 \`${chart_sha}\`)
 NOTES
 
-assets=("$dist/sage-install.py" "$dist/$chart" "$dist/SHA256SUMS")
+assets=("$dist/sage-install" "$dist/sage-install.py" "$dist/$chart" "$dist/SHA256SUMS")
 if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
   # Release creata a mano dalla pagina di GitHub (che crea anche il tag): si completano
   # file e note.

@@ -13,6 +13,8 @@
   checksum, immagini per digest (ADR-0008).
 - `ansible/files/collect_node.py` (sui nodi) e `installer/sage_install.py` (sui master) girano con
   **Python 3.9 e sola libreria standard**. I test dell'installer sono unittest, senza dipendenze.
+  L'installer viene poi compilato dalla CI in un eseguibile unico (ADR-0016): niente librerie
+  esterne, e nessun file accanto allo script.
 - La logica della CI sta in `ci/*.sh`: i workflow chiamano solo gli script.
 - L'LLM riceve **solo dati pubblici della CVE**: mai dati dei nodi nel prompt (ADR-0004).
 - Le condizioni dell'LLM valgono solo con verifica sul nodo e controllo di coerenza (ADR-0001).

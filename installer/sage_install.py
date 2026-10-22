@@ -20,6 +20,7 @@ import concurrent.futures
 import copy
 import datetime
 import getpass
+import gzip
 import hashlib
 import io
 import json
@@ -361,6 +362,7 @@ def build_values(
     llm_secret: bool,
     groups: list[Group],
     proxy: list[dict],
+    live: bool = False,
 ) -> dict:
     """Valori completi per Helm, partendo da quelli esistenti (campi ignoti conservati).
 
@@ -376,7 +378,8 @@ def build_values(
     values.pop("schedule", None)
     values.pop("timeZone", None)
     values["suspend"] = suspend
-    values["dryRun"] = bool(base.get("dryRun", True))
+    # --live: modalità reale da subito; altrimenti resta quella attuale (simulazione se nuova).
+    values["dryRun"] = False if live else bool(base.get("dryRun", True))
     values["secrets"] = {
         **values.get("secrets", {}),
         "ssh": f"{release}-ssh",
@@ -1355,6 +1358,48 @@ def who_text(kube_user: str | None) -> str:
     return f"{user}@{host}" + (f" ({kube_user})" if kube_user else "")
 
 
+PHASES = {
+    "scan": "controllo completo in corso",
+    "remediate": "remediation dei nodi",
+    "pause": "in pausa",
+}
+
+
+def progress_lines(doc: dict | None) -> tuple[list[str], str | None]:
+    """Righe leggibili sullo stato del controllore e il Job in corso (o None)."""
+    if not doc or not doc.get("cycle"):
+        return ["Nessun giro ancora: il controllore non ha salvato uno stato."], None
+    cycle = doc["cycle"]
+    lines = [
+        f"Giro {cycle.get('id')}: {PHASES.get(cycle.get('phase'), cycle.get('phase'))}"
+        f" (iniziato {cycle.get('started', '?')}, motivo: {cycle.get('reason', '?')})"
+    ]
+    if doc.get("halted"):
+        lines.append(f"FERMO: {doc.get('halt_reason')}")
+    running = {
+        n: st.get("job")
+        for n, st in (doc.get("nodes") or {}).items()
+        if st.get("status") == "running"
+    }
+    results = cycle.get("results") or {}
+    for node in cycle.get("queue") or []:
+        if node in running:
+            state = f"remediation in corso ({running[node]})"
+        else:
+            state = (results.get(node) or {}).get("outcome", "da fare")
+        lines.append(f"  {node}: {state}")
+    if cycle.get("phase") == "pause":
+        lines.append(f"Prossimo giro: {cycle.get('pause_until')}")
+    if cycle.get("error"):
+        lines.append(f"Errore: {cycle['error']}")
+    job = next(iter(running.values()), None)
+    if job is None and cycle.get("phase") == "scan":
+        job = cycle.get("scan_job")
+    if job is None:
+        lines.append("Nessun lavoro in corso adesso.")
+    return lines, job
+
+
 def parse_k8s_time(value) -> float:
     """'2026-10-22T17:05:03Z' -> secondi epoch (0 se manca)."""
     if not value:
@@ -1539,6 +1584,12 @@ class Installer:
         ui.busy("Controllo il cluster e i permessi...")
         self.preflight()
         current = self.current_values()
+        if self.args.dashboard or self.args.resume:
+            if current is None:
+                raise Fail(f"SAGE non è installato (release {self.release}, namespace {self.ns})")
+            if self.args.resume:
+                return self.resume_view()
+            return self.open_dashboard(current)
         if current is None:
             return self.configure({}, new=True)
         while True:
@@ -1828,6 +1879,9 @@ class Installer:
         ui.step(3, total, "Gruppi e ondate")
         groups, assignment = self.initial_groups(config, selected)
         groups = self.edit_groups(groups, assignment, selected, new)
+        if self.args.allow_remove:
+            for g in groups:
+                g.allow_remove = True
 
         # 4. LLM
         ui.step(4, total, "LLM")
@@ -1879,6 +1933,7 @@ class Installer:
             llm_secret=bool(llm_keys) or self.secret_exists(f"{self.release}-llm"),
             groups=groups,
             proxy=proxy,
+            live=self.args.live,
         )
         label_changes = node_label_changes(nodes, assignment)
         changes = []
@@ -1920,7 +1975,7 @@ class Installer:
                 f"utente SSH {user}",
                 "LLM: " + (llm_text(llm) or "nessuno"),
                 ("controllore spento" if suspend else f"giro continuo, pausa {pause} minuti")
-                + ", simulazione",
+                + (", MODALITÀ REALE da subito (--live)" if self.args.live else ", simulazione"),
             ]
             if key_note:
                 changes.append(key_note)
@@ -1955,6 +2010,16 @@ class Installer:
             else f"continuo, pausa di {pause} minuti tra un giro e l'altro"
         )
         lines.append(f"Giri       {when}, {mode}")
+        removing = [g.name for g in groups if g.allow_remove]
+        if removing:
+            lines.append(
+                f"Rimozioni  pacchetti inutilizzati da 7 giorni nei gruppi: {', '.join(removing)}"
+            )
+        if not values["dryRun"]:
+            lines.append(
+                "\nATTENZIONE: modalità reale. Finito il primo controllo, SAGE inizia ad "
+                "aggiornare i nodi uno alla volta (drain e, se serve, riavvio)."
+            )
         return "\n".join(lines)
 
     def ask_note(self) -> str:
@@ -2613,6 +2678,30 @@ class Installer:
         self.ui.ok(action)
         return 0
 
+    def read_json_cm(self, name: str) -> dict | None:
+        """Stato salvato da SAGE in una ConfigMap (JSON compresso, come sage.kube)."""
+        out = self.kubectl("get", "configmap", name, "-o", "json", ns=True, check=False)
+        if out.returncode != 0:
+            return None
+        blob = (json.loads(out.stdout).get("binaryData") or {}).get("data.json.gz")
+        return json.loads(gzip.decompress(base64.b64decode(blob))) if blob else None
+
+    def resume_view(self) -> int:
+        """Stato del giro e log di quello che SAGE sta facendo adesso."""
+        doc = self.read_json_cm(f"{self.release}-controller")
+        self.ui.close()
+        lines, job = progress_lines(doc)
+        print("\n".join(lines))
+        if not job:
+            return 0
+        print(f"\nLog di {job} (Ctrl+C per uscire, il lavoro continua):\n")
+        cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
+        try:
+            subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
+        except KeyboardInterrupt:
+            print()
+        return 0
+
     def open_dashboard(self, current: dict) -> int:
         """Port-forward verso la dashboard: resta aperto finché non si preme Ctrl+C."""
         dashboard = current.get("dashboard") or {}
@@ -2833,6 +2922,24 @@ def parse_args(argv=None):
         help="chart da usare: cartella o .tgz (default: quello della release o della repo)",
     )
     p.add_argument("--ssh-port", type=int, help="porta SSH dei nodi (default: 22)")
+    p.add_argument(
+        "--live",
+        action="store_true",
+        help="installa (o riconfigura) direttamente in modalità reale, senza simulazione",
+    )
+    p.add_argument(
+        "--allow-remove",
+        action="store_true",
+        help="permette a tutti i gruppi di rimuovere i pacchetti inutilizzati",
+    )
+    p.add_argument(
+        "--dashboard", action="store_true", help="apre subito la dashboard (port-forward)"
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="mostra il giro in corso e segue il log di quello che SAGE sta facendo adesso",
+    )
     p.add_argument(
         "--dashboard-port",
         type=int,
