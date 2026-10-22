@@ -17,11 +17,26 @@ Un LLM legge i dati pubblici della CVE e ne estrae le **condizioni** di sfruttab
 viene inviato. La decisione finale è di OPA. Le azioni procedono a ondate per gruppi di nodi, con
 un canary per gruppo, un nodo alla volta e rollback automatico.
 
+## Installazione
+
+Da un master del cluster (serve `kubectl` con permessi di amministratore), con un solo comando:
+
+```bash
+curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage-install.py
+python3 sage-install.py
+```
+
+L'installer mostra i nodi e fa scegliere quali gestire (frecce, spazio, invio), propone i gruppi,
+crea e installa la chiave SSH dedicata, configura l'LLM, installa il chart con Helm e lancia un
+primo giro in simulazione. Rilanciato, riconfigura, passa al vivo, sospende o disinstalla.
+Funziona con nodi della famiglia RHEL (la remediation usa dnf). Dettagli:
+[ADR-0011](docs/adr/0011-installer-interattivo.md); passi completi nella
+[guida al test](docs/test-gemello.md).
+
 ## Stato
 
-Prima versione completa: raccolta, analisi, decisione, report e VEX, remediation a ondate.
-Pronta per il test sul gemello: **[guida al test](docs/test-gemello.md)**.
-Roadmap in [docs/roadmap.md](docs/roadmap.md).
+Prima versione completa: raccolta, analisi, decisione, report e VEX, remediation a ondate,
+installer. In test sul gemello. Roadmap in [docs/roadmap.md](docs/roadmap.md).
 
 ## Principi
 
@@ -43,6 +58,8 @@ src/sage/        codice Python (comando `sage`: scan, remediate, resume, check-c
 ansible/         collect.yml e remediate.yml (usati da SAGE e a mano in emergenza)
 policy/          regole OPA (Rego) e relativi test
 chart/sage/      chart Helm: CronJob, modello del Job di remediation, RBAC
+installer/       installer interattivo (un file, Python 3.9 senza dipendenze)
+ci/              script della CI e della release (i workflow li chiamano e basta)
 examples/        configurazione e valori d'esempio
 docs/            architettura, ADR, roadmap, runbook, guida al test
 tests/           test Python con dati sintetici
@@ -58,8 +75,12 @@ opa test policy -v
 uv run sage check-config --config examples/config.example.yaml
 ```
 
-`ansible/files/collect_node.py` gira **sui nodi** con il Python di sistema (3.9 su Rocky 9):
-solo libreria standard.
+`ansible/files/collect_node.py` gira **sui nodi** e `installer/sage_install.py` **sui master**,
+con il Python di sistema (3.9 su Rocky 9): solo libreria standard. I test dell'installer girano
+anche con 3.9: `uv run --no-project --python 3.9 python -m unittest tests.test_installer`.
+
+Release: con la CI verde, `git tag vX.Y.Z && git push origin vX.Y.Z` (stessa versione di
+`pyproject.toml` e `Chart.yaml`).
 
 ## Licenza
 

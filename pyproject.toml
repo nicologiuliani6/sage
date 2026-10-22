@@ -32,7 +32,8 @@ line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
 # Il collector gira sui nodi con il Python di sistema (3.9 su Rocky 9).
-per-file-target-version = { "ansible/files/*.py" = "py39" }
+# Anche l'installer gira sui master con il Python di sistema.
+per-file-target-version = { "ansible/files/*.py" = "py39", "installer/*.py" = "py39" }
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
