@@ -140,6 +140,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    from sage import dashboard
+    from sage.kube import Kube
+
+    source = dashboard.Source(Kube(), _release(), args.config)
+    dashboard.serve(source, args.bind, args.port, args.refresh)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sage", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -160,6 +169,12 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("resume", help="sblocca le ondate dopo un errore controllato a mano")
 
+    p = sub.add_parser("dashboard", help="dashboard web di sola lettura")
+    p.add_argument("--config", required=True)
+    p.add_argument("--bind", default="127.0.0.1", help="indirizzo (predefinito solo locale)")
+    p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--refresh", type=int, default=60, help="secondi tra un aggiornamento e l'altro")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -175,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         "scan": cmd_scan,
         "remediate": cmd_remediate,
         "resume": cmd_resume,
+        "dashboard": cmd_dashboard,
     }
     from sage.kube import KubeUnavailable
 

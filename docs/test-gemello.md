@@ -58,6 +58,21 @@ Una nuova installazione è sempre **in simulazione**: nessuna modifica ai nodi.
 
 ## 2. Leggere il primo giro
 
+### Dalla dashboard
+
+Rilancia l'installer e scegli *Apri la dashboard (sola lettura)*. Dal tuo PC apri un tunnel verso
+il master e poi il browser su `http://localhost:8080`:
+
+```bash
+ssh -L 8080:localhost:8080 <utente>@<IP del master>
+```
+
+In alto gli allarmi, poi quanto manca (nodi senza azioni in sospeso, advisory da applicare, CVE
+KEV aperte), le ondate con il canary, una scheda per nodo con i pacchetti e il motivo di ogni
+decisione, le CVE ordinate per urgenza e lo storico. Si aggiorna da sola ogni minuto.
+
+### Dal log e dal report
+
 Alla fine del log c'è il riepilogo per nodo: quanti pacchetti per azione, i pacchetti non
 "aggiorna" con il motivo, il piano e cosa farebbe la prossima ondata. Il report completo
 (decisioni, prove, VEX):

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAGE · sicurezza dei nodi</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>SAGE</h1>
+        <p class="sub">sicurezza dei nodi, sola lettura</p>
+      </div>
+    </div>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <main>
+    <p class="error" id="error" hidden></p>
+
+    <section aria-labelledby="h-alarms">
+      <h2 id="h-alarms">Allarmi</h2>
+      <ul class="alarms" id="alarms"></ul>
+    </section>
+
+    <section class="tiles" id="tiles" aria-label="Riepilogo"></section>
+
+    <section aria-labelledby="h-waves">
+      <h2 id="h-waves">Ondate</h2>
+      <p class="hint">Ordine di aggiornamento: un gruppo alla volta, il canary per primo, poi l'osservazione.</p>
+      <div class="waves" id="waves"></div>
+      <ul class="messages" id="messages"></ul>
+    </section>
+
+    <section aria-labelledby="h-nodes">
+      <h2 id="h-nodes">Nodi</h2>
+      <div class="nodes" id="nodes"></div>
+    </section>
+
+    <section aria-labelledby="h-cves">
+      <div class="section-head">
+        <h2 id="h-cves">CVE</h2>
+        <div class="filters">
+          <input type="search" id="cve-search" placeholder="Cerca CVE o pacchetto" aria-label="Cerca CVE o pacchetto">
+          <select id="cve-node" aria-label="Nodo"><option value="">Tutti i nodi</option></select>
+          <label class="check"><input type="checkbox" id="cve-open" checked> solo da sistemare</label>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>CVE</th><th>Priorità</th><th>EPSS</th><th>Dove</th></tr></thead>
+          <tbody id="cves"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="cve-count"></p>
+    </section>
+
+    <section aria-labelledby="h-history">
+      <h2 id="h-history">Storico delle modifiche</h2>
+      <ul class="history" id="history"></ul>
+    </section>
+  </main>
+
+  <footer>
+    <a href="/api/vex" download>Scarica il VEX (OpenVEX)</a>
+    <span id="footer"></span>
+  </footer>
+</body>
+</html>

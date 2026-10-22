@@ -1569,6 +1569,7 @@ class Installer:
                     "suspend",
                 ),
                 ("Lancia un giro adesso", "run"),
+                ("Apri la dashboard (sola lettura)", "dashboard"),
                 ("Storico delle modifiche", "history"),
                 ("Disinstalla SAGE", "uninstall"),
                 ("Esci", "exit"),
@@ -1587,6 +1588,8 @@ class Installer:
                 return self.toggle_suspend(current)
             if action == "run":
                 return self.run_now()
+            if action == "dashboard":
+                return self.open_dashboard(current)
             if action == "history":
                 self.show_history()
                 continue
@@ -2615,6 +2618,33 @@ class Installer:
         self.ui.ok(action)
         return 0
 
+    def open_dashboard(self, current: dict) -> int:
+        """Port-forward verso la dashboard: resta aperto finché non si preme Ctrl+C."""
+        dashboard = current.get("dashboard") or {}
+        if dashboard.get("enabled") is False:
+            raise Fail(
+                "dashboard disattivata (dashboard.enabled: false nei valori): "
+                "riattivala riconfigurando con quel valore a true"
+            )
+        port = int(dashboard.get("port") or 8080)
+        local = self.args.dashboard_port
+        deploy = f"deploy/{self.release}-dashboard"
+        self.kubectl("rollout", "status", deploy, "--timeout=120s", ns=True)
+        self.ui.close()
+        print(
+            f"\nDashboard di SAGE: http://localhost:{local}\n"
+            f"Da un altro computer: ssh -L {local}:localhost:{local} "
+            f"{getpass.getuser()}@{socket.gethostname()}, poi lo stesso indirizzo.\n"
+            "Ctrl+C per chiudere.\n"
+        )
+        cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
+        cmd += ["-n", self.ns, "port-forward", "--address", "127.0.0.1", deploy, f"{local}:{port}"]
+        try:
+            subprocess.run(cmd, check=False)
+        except KeyboardInterrupt:
+            print("\ndashboard chiusa")
+        return 0
+
     def run_now(self) -> int:
         ui = self.ui
         job = f"{self.release}-manual-{time.strftime('%m%d%H%M%S')}"
@@ -2765,6 +2795,12 @@ def parse_args(argv=None):
         help="chart da usare: cartella o .tgz (default: quello della release o della repo)",
     )
     p.add_argument("--ssh-port", type=int, help="porta SSH dei nodi (default: 22)")
+    p.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8080,
+        help="porta locale per aprire la dashboard (default: 8080)",
+    )
     p.add_argument("--no-tui", action="store_true", help="domande su righe, senza schermo intero")
     p.add_argument(
         "--version", action="version", version=RELEASE.get("version", "copia locale della repo")

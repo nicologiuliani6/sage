@@ -32,6 +32,9 @@ installa la chiave SSH dedicata, configura l'LLM (qualsiasi endpoint compatibile
 installa il chart con Helm e lancia un primo giro in simulazione. Rilanciato, riconfigura, passa
 al vivo, sospende o disinstalla; ogni modifica finisce in uno storico con chi, quando e perché
 ([ADR-0012](docs/adr/0012-storico-delle-modifiche.md)).
+Lo stato si guarda dalla dashboard di sola lettura (installer, *Apri la dashboard*): allarmi,
+sicurezza di ogni nodo, avanzamento delle ondate, CVE per urgenza
+([ADR-0014](docs/adr/0014-dashboard-sola-lettura.md)).
 Funziona con nodi della famiglia RHEL (la remediation usa dnf). Dettagli:
 [ADR-0011](docs/adr/0011-installer-interattivo.md); passi completi nella
 [guida al test](docs/test-gemello.md).

@@ -15,3 +15,7 @@ si segna come sostituita e se ne scrive una nuova.
 | [0008](0008-dipendenze-e-supply-chain.md) | Dipendenze gratuite, open source e pinnate |
 | [0009](0009-rimozione-dai-fatti.md) | La rimozione la decide la policy sui fatti, non l'LLM |
 | [0010](0010-errori-e-ripresa.md) | Un errore ferma le ondate, una persona le riprende |
+| [0011](0011-installer-interattivo.md) | Un installer interattivo per qualsiasi cluster |
+| [0012](0012-storico-delle-modifiche.md) | Storico delle modifiche fatte con l'installer |
+| [0013](0013-profilo-del-nodo.md) | Profilo del nodo: servizi, dipendenze, container esclusi |
+| [0014](0014-dashboard-sola-lettura.md) | Dashboard web di sola lettura, aperta con port-forward |

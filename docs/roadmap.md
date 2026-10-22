@@ -11,6 +11,7 @@
       riserva LLM, rollback, stop e `sage resume`
 - [x] Installer interattivo per qualsiasi cluster e release con la CI
       ([ADR-0011](adr/0011-installer-interattivo.md))
+- [x] Dashboard web di sola lettura ([ADR-0014](adr/0014-dashboard-sola-lettura.md))
 
 ## Da fare
 
@@ -38,3 +39,4 @@
 - [ ] Prompt di prova sull'LLM come controllo di salute del gruppo LLM (oggi: `health_urls`)
 - [ ] Integrazione con `certcc-ssvc` per l'albero SSVC completo
 - [ ] Installer: supporto ai nodi non RHEL (apt) quando la remediation lo avrà
+- [ ] Dashboard: azioni operative (sospendi, giro, sblocca) con login tramite token Kubernetes

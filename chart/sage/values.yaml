@@ -54,6 +54,20 @@ resources:
   limits:
     memory: 1Gi
 
+# Dashboard di sola lettura (ADR-0014): si apre con
+#   kubectl -n <namespace> port-forward deploy/<release>-dashboard 8080:<port>
+# e poi http://localhost:8080 (da un altro PC: ssh -L 8080:localhost:8080 <master>).
+dashboard:
+  enabled: true
+  port: 8080
+  refreshSeconds: 60          # ogni quanto la pagina rilegge i dati
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
