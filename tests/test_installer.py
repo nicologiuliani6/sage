@@ -239,7 +239,32 @@ class Values(unittest.TestCase):
                 text=True,
             )
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("kind: CronJob", out.stdout)
+        docs = out.stdout.split("\n---\n")
+        controller = next(d for d in docs if "name: sage-controller\n" in d and "Deployment" in d)
+        self.assertIn("replicas: 1", controller)
+        self.assertIn("type: Recreate", controller)
+        self.assertIn("- controller", controller)
+        self.assertIn("- --dry-run", controller)
+        self.assertIn("restartPolicy: Always", controller)
+        self.assertIn("livenessProbe:", controller)
+        self.assertNotIn("/etc/sage/ssh", controller)  # il controllore non usa la chiave SSH
+        template = next(d for d in docs if "name: sage-scan-template" in d)
+        self.assertIn("sage.io/role: scan", template)
+        self.assertIn("/etc/sage/ssh", template)
+        self.assertIn("restartPolicy: Never", template)
+        self.assertNotIn("kind: CronJob", out.stdout)
+        rbac = next(d for d in docs if "kind: Role\n" in d and "name: sage\n" in d)
+        self.assertIn("leases", rbac)
+        # Controllore spento: 0 copie.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "values.json"
+            path.write_text(json.dumps(self.make(suspend=True)))
+            off = subprocess.run(
+                [helm, "template", "sage", str(ROOT / "chart" / "sage"), "-f", str(path)],
+                capture_output=True,
+                text=True,
+            )
+        self.assertIn("replicas: 0", off.stdout)
 
     def test_images(self):
         self.assertEqual(
