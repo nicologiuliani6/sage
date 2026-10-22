@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 STATE = Path(os.environ["FAKE_STATE"])
@@ -86,15 +87,31 @@ def kubectl(args):
         ns = state["namespace"]
         return out(ns) if ns else fail("not found")
     if a[:3] == ["create", "-f", "-"]:
-        state["namespace"] = json.loads(sys.stdin.read())
+        text = sys.stdin.read()
+        if text.lstrip().startswith("{"):
+            state["namespace"] = json.loads(text)
+        else:  # Job di controllo in YAML (dal modello del chart)
+            name = text.split("name: ", 1)[1].split()[0]
+            assert "sage.io/role: scan" in text
+            state["jobs"].append(name)
         save(state)
         return out("created")
+    if a[:2] == ["create", "configmap"]:
+        state.setdefault("flags", []).append(a[2])
+        if a[2].endswith("-scan-now"):  # il controllore finto avvia subito il controllo
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            state.setdefault("scan_jobs", []).append({"name": "sage-scan-1", "created": stamp})
+        save(state)
+        return out("configmap created")
     if a[0] == "apply":
         doc = json.loads(sys.stdin.read())
         store = "configmaps" if doc["kind"] == "ConfigMap" else "secrets"
         state[store][doc["metadata"]["name"]] = doc
         save(state)
         return out("applied")
+    if a[:2] == ["get", "configmap"] and a[2].endswith("-scan-template"):
+        job = "apiVersion: batch/v1\nkind: Job\nmetadata:\n  labels:\n    sage.io/role: scan\n"
+        return out({"data": {"job.yaml": job}})
     if a[:2] == ["get", "configmap"]:
         cm = state["configmaps"].get(a[2])
         return out(cm) if cm else fail(f'configmaps "{a[2]}" not found')
@@ -119,6 +136,12 @@ def kubectl(args):
     if a[:2] == ["get", "job"]:
         return out({"status": {"succeeded": 1}})
     if a[:2] == ["get", "jobs"]:
+        if "sage.io/role=scan" in a:
+            items = [
+                {"metadata": {"name": j["name"], "creationTimestamp": j["created"]}}
+                for j in state.get("scan_jobs", [])
+            ]
+            return out({"items": items})
         return out({"items": []})
     if a[:2] == ["rollout", "status"]:
         return out("deployment successfully rolled out")

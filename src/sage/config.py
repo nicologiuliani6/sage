@@ -17,15 +17,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-KERNEL_MODES = ("auto", "window", "manual")
+KERNEL_MODES = ("auto", "manual")
 DRAIN_MODES = ("evict", "wait-empty")
 LOG_LEVELS = ("info", "debug")
 # Nome di una unit systemd o di un pacchetto.
 SERVICE_RE = re.compile(r"^[A-Za-z0-9@._:+-]{1,128}$")
-WINDOW_RE = re.compile(
-    r"^(?P<days>(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun))*) "
-    r"(?P<start>([01]\d|2[0-3]):[0-5]\d)-(?P<end>([01]\d|2[0-3]):[0-5]\d)$"
-)
 
 
 class ConfigError(ValueError):
@@ -69,15 +65,14 @@ class NodeGroup:
     name: str
     selector: str
     order: int
-    concurrency: int = 1
+    # Primo nodo del gruppo nel giro: se qualcosa va storto, si ferma lì.
     canary: str | None = None
-    canary_soak_minutes: int = 360
-    kernel: str = "window"
+    # auto: il kernel si aggiorna nel giro come il resto; manual: mai in automatico.
+    kernel: str = "auto"
     drain: str = "evict"
     drain_timeout_seconds: int = 1800
     allow_remove: bool = False
     allow_mitigate: bool = False
-    window: str | None = None
     requires_fallback: bool = False
     health_urls: tuple[str, ...] = ()
 
@@ -88,6 +83,8 @@ class PolicyConfig:
     protected_modules: tuple[str, ...] = ()
     idle_scans_required: int = 3
     epss_attend_threshold: float = 0.1
+    # Entro quante ore dalla scoperta una CVE grave (priorità act) deve essere sistemata.
+    urgent_deadline_hours: int = 6
 
 
 @dataclass(frozen=True)
@@ -101,19 +98,30 @@ class SourcesConfig:
 
 
 @dataclass(frozen=True)
+class ControllerConfig:
+    """Il controllore gira in loop: controllo completo, remediation nodo per nodo, pausa."""
+
+    # Attesa tra la fine di un giro e l'inizio del successivo (0 = subito).
+    pause_minutes: int = 30
+    # Ogni quanti secondi il controllore guarda lo stato dei Job.
+    poll_seconds: int = 30
+
+
+@dataclass(frozen=True)
 class Config:
     ssh: SshConfig
     llm: LlmConfig
     groups: tuple[NodeGroup, ...]
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
-    # Fuso orario delle finestre di manutenzione.
+    # Fuso orario degli orari nel report e nei log.
     timezone: str = "UTC"
     # Dettaglio del log: "info" (fasi e avanzamento) o "debug" (anche ogni CVE e la cache).
     log_level: str = "info"
     # Servizi (unit systemd) o pacchetti fuori da Kubernetes che un nodo deve tenere:
     # nome del nodo -> elenco. Contano come necessari anche quando non girano.
     extra_services: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    controller: ControllerConfig = field(default_factory=ControllerConfig)
 
     def group(self, name: str) -> NodeGroup | None:
         return next((g for g in self.groups if g.name == name), None)
@@ -153,6 +161,7 @@ def parse(raw: dict[str, Any]) -> Config:
         log_level = "info"
 
     extra_services = _parse_extra_services(raw.get("extra_services"), errors)
+    controller = _parse_controller(raw.get("controller") or {}, errors)
 
     group_names = {g.name for g in groups}
     for ep in llm.endpoints:
@@ -170,6 +179,7 @@ def parse(raw: dict[str, Any]) -> Config:
         timezone=str(timezone),
         log_level=log_level,
         extra_services=extra_services,
+        controller=controller,
     )
 
 
@@ -287,17 +297,14 @@ def _parse_groups(raw: Any, errors: list[str]) -> tuple[NodeGroup, ...]:
             errors.append(f"{where}.name: '{name}' duplicato")
         names.add(name)
 
-        kernel = g.get("kernel", "window")
+        kernel = g.get("kernel", "auto")
+        if kernel == "window":
+            kernel = "auto"  # configurazioni precedenti: la finestra di manutenzione non c'è più
         if kernel not in KERNEL_MODES:
             errors.append(f"{where}.kernel: uno tra {', '.join(KERNEL_MODES)}")
         drain = g.get("drain", "evict")
         if drain not in DRAIN_MODES:
             errors.append(f"{where}.drain: uno tra {', '.join(DRAIN_MODES)}")
-        window = g.get("window") or None
-        if window is not None and not WINDOW_RE.match(window):
-            errors.append(f"{where}.window: formato 'sat 02:00-06:00' o 'sat,sun 02:00-06:00'")
-        if kernel == "window" and window is None:
-            errors.append(f"{where}.window: obbligatoria se kernel è 'window'")
         health_urls = _str_list(g, "health_urls", where, errors)
         for url in health_urls:
             _url(url, f"{where}.health_urls", errors)
@@ -307,20 +314,28 @@ def _parse_groups(raw: Any, errors: list[str]) -> tuple[NodeGroup, ...]:
                 name=name,
                 selector=selector,
                 order=order,
-                concurrency=_int(g, "concurrency", 1, where, errors, 1),
                 canary=g.get("canary") or None,
-                canary_soak_minutes=_int(g, "canary_soak_minutes", 360, where, errors, 0),
                 kernel=kernel,
                 drain=drain,
                 drain_timeout_seconds=_int(g, "drain_timeout_seconds", 1800, where, errors, 60),
                 allow_remove=bool(g.get("allow_remove", False)),
                 allow_mitigate=bool(g.get("allow_mitigate", False)),
-                window=window,
                 requires_fallback=bool(g.get("requires_fallback", False)),
                 health_urls=health_urls,
             )
         )
     return tuple(sorted(groups, key=lambda grp: grp.order))
+
+
+def _parse_controller(raw: Any, errors: list[str]) -> ControllerConfig:
+    if not isinstance(raw, dict):
+        errors.append("controller: deve essere un oggetto")
+        return ControllerConfig()
+    where = "controller"
+    return ControllerConfig(
+        pause_minutes=_int(raw, "pause_minutes", 30, where, errors, 0),
+        poll_seconds=_int(raw, "poll_seconds", 30, where, errors, 5),
+    )
 
 
 def _parse_extra_services(raw: Any, errors: list[str]) -> dict[str, tuple[str, ...]]:
@@ -353,6 +368,7 @@ def _parse_policy(raw: dict[str, Any], errors: list[str]) -> PolicyConfig:
         protected_modules=_str_list(raw, "protected_modules", where, errors),
         idle_scans_required=_int(raw, "idle_scans_required", 3, where, errors, 1),
         epss_attend_threshold=threshold,
+        urgent_deadline_hours=_int(raw, "urgent_deadline_hours", 6, where, errors, 1),
     )
 
 

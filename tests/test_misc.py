@@ -4,25 +4,7 @@ import pytest
 
 from sage import config, remediate, report
 from sage.analyze import Analysis, CveResult, PackageDecision
-from sage.schedule import in_window
 from tests.conftest import base_config
-
-
-@pytest.mark.parametrize(
-    "window, when, expected",
-    [
-        ("sat 02:00-06:00", "2026-10-24 03:00", True),
-        ("sat 02:00-06:00", "2026-10-24 06:00", False),
-        ("sat 02:00-06:00", "2026-10-25 03:00", False),
-        ("sat,sun 02:00-06:00", "2026-10-25 03:00", True),
-        ("sat 22:00-02:00", "2026-10-24 23:00", True),
-        ("sat 22:00-02:00", "2026-10-25 01:00", True),
-        ("sat 22:00-02:00", "2026-10-24 01:00", False),
-        (None, "2026-10-24 03:00", False),
-    ],
-)
-def test_in_window(window, when, expected):
-    assert in_window(window, datetime.fromisoformat(when)) is expected
 
 
 def test_config_new_fields():

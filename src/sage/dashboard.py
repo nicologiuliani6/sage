@@ -1,7 +1,7 @@
 """Dashboard web di sola lettura: sicurezza di ogni nodo, allarmi, avanzamento (ADR-0014).
 
-Legge solo quello che SAGE ha già scritto nel cluster (report, stato delle ondate,
-storico, CronJob, nodi) e non modifica niente: il ServiceAccount ha solo permessi di
+Legge solo quello che SAGE ha già scritto nel cluster (report, stato del controllore,
+storico, Lease, nodi) e non modifica niente: il ServiceAccount ha solo permessi di
 lettura. Il server ascolta in locale nel pod e si apre con `kubectl port-forward`, così
 l'accesso lo decide l'RBAC di Kubernetes e non serve un login proprio.
 """
@@ -19,7 +19,7 @@ from importlib import resources
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sage import __version__, config, schedule
+from sage import __version__, config
 from sage.inventory import assign_groups
 from sage.kube import KubeApi, Node
 
@@ -94,10 +94,27 @@ def profile_warnings(profile: dict[str, Any] | None) -> list[str]:
     return warnings
 
 
-def cron_period(expr: str, now: datetime) -> timedelta | None:
-    first = schedule.next_run(expr, now)
-    second = schedule.next_run(expr, first) if first else None
-    return second - first if first and second else None
+def urgent_deadlines(
+    state: dict[str, Any], report: dict[str, Any], hours: int
+) -> dict[str, list[dict[str, Any]]]:
+    """CVE gravi ancora da sistemare per nodo, con la scadenza (scoperta + `hours`)."""
+    pending = {
+        (node, d.get("package"))
+        for node, items in (report.get("nodes") or {}).items()
+        for d in items
+        if d.get("priority") == "act" and d.get("action") in PENDING_ACTIONS
+    }
+    result: dict[str, list[dict[str, Any]]] = {}
+    for key, found in (state.get("urgent") or {}).items():
+        node, _, package = key.partition("|")
+        seen = _parse(found)
+        if (node, package) in pending and seen:
+            result.setdefault(node, []).append(
+                {"package": package, "found": found, "deadline": seen + timedelta(hours=hours)}
+            )
+    for items in result.values():
+        items.sort(key=lambda i: i["deadline"])
+    return result
 
 
 def node_status(
@@ -107,7 +124,9 @@ def node_status(
     decisions: list[dict[str, Any]] | None,
     plan: dict[str, Any] | None,
     wave: dict[str, Any],
+    outcome: dict[str, Any] | None,
     profile: dict[str, Any] | None,
+    urgent: list[dict[str, Any]],
     now: datetime,
 ) -> dict[str, Any]:
     decisions = decisions or []
@@ -116,13 +135,7 @@ def node_status(
     priorities = Counter(d.get("priority") for d in pending)
     plan = plan or {}
     deferred = plan.get("deferred") or []
-    soak_until = None
-    if group and group.canary == name and wave.get("last_success"):
-        end = _parse(wave["last_success"])
-        if end:
-            end += timedelta(minutes=group.canary_soak_minutes)
-            soak_until = end if end > now else None
-    next_window = schedule.next_window(group.window, now) if group and deferred else None
+    deadline = urgent[0]["deadline"] if urgent else None
 
     reasons: list[str] = []
     level = "ok"
@@ -142,6 +155,8 @@ def node_status(
             raise_to("warning", "nodo in cordon")
     if wave.get("status") == "failed":
         raise_to("critical", "remediation fallita")
+    if deadline and deadline < now:
+        raise_to("critical", f"CVE gravi oltre la scadenza ({len(urgent)} pacchetti)")
     if kev:
         raise_to("critical", f"{len(kev)} CVE sfruttate attivamente (KEV) da sistemare")
     elif priorities.get("act"):
@@ -176,13 +191,14 @@ def node_status(
             "mitigate": plan.get("denylist_modules") or [],
             "deferred": deferred,
         },
-        "next_window": _iso(next_window),
+        "deadline": _iso(deadline),
+        "urgent": [u["package"] for u in urgent],
         "wave": {
             "status": wave.get("status") or "idle",
             "job": wave.get("job"),
             "started": wave.get("started"),
             "last_success": wave.get("last_success"),
-            "soak_until": _iso(soak_until),
+            "outcome": (outcome or {}).get("outcome"),
         },
         "profile": {
             "units": len((profile or {}).get("units") or []),
@@ -257,6 +273,54 @@ def cve_table(report: dict[str, Any]) -> list[dict[str, Any]]:
     return ordered[:MAX_CVES]
 
 
+def controller_status(
+    doc: dict[str, Any] | None,
+    lease: dict[str, Any] | None,
+    deployment: dict[str, Any] | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """In che punto del giro è il controllore, e se è vivo."""
+    doc = doc or {}
+    cycle = doc.get("cycle") or {}
+    suspended = bool(deployment is not None and deployment.get("replicas") == 0)
+    renewed = _parse((lease or {}).get("renew_time"))
+    alive = bool(renewed and now - renewed < timedelta(minutes=5))
+    queue = cycle.get("queue") or []
+    results = cycle.get("results") or {}
+    running = next(
+        (n for n, st in (doc.get("nodes") or {}).items() if st.get("status") == "running"), None
+    )
+    phase = cycle.get("phase")
+    if suspended:
+        text = "spento (giri sospesi)"
+    elif not cycle:
+        text = "in avvio"
+    elif phase == "scan":
+        text = "controllo completo in corso"
+    elif phase == "remediate":
+        text = f"remediation su {running}" if running else "sceglie il prossimo nodo"
+    else:
+        text = "in pausa"
+    return {
+        "suspended": suspended,
+        "alive": alive,
+        "holder": (lease or {}).get("holder"),
+        "renewed": _iso(renewed),
+        "cycle": cycle.get("id"),
+        "phase": phase,
+        "text": text,
+        "started": cycle.get("started"),
+        "next_cycle": cycle.get("pause_until") if phase == "pause" else None,
+        "done": len([n for n in queue if n in results]),
+        "queue": len(queue),
+        "running": running,
+        "results": [{"node": n, **results[n]} for n in queue if n in results],
+        "halted": bool(doc.get("halted")),
+        "halt_reason": doc.get("halt_reason"),
+        "error": cycle.get("error"),
+    }
+
+
 def build_status(
     *,
     cfg: config.Config | None,
@@ -264,8 +328,10 @@ def build_status(
     nodes: list[Node],
     report: dict[str, Any] | None,
     state: dict[str, Any] | None,
+    controller: dict[str, Any] | None,
+    lease: dict[str, Any] | None,
+    deployment: dict[str, Any] | None,
     history_text: str | None,
-    cronjob: dict[str, Any] | None,
     now: datetime,
 ) -> dict[str, Any]:
     """Tutto quello che mostra la dashboard, calcolato dai dati già nel cluster."""
@@ -276,41 +342,36 @@ def build_status(
     def alarm(level: str, text: str) -> None:
         alarms.append({"level": level, "text": text})
 
+    local_now = now.astimezone(ZoneInfo(cfg.timezone if cfg else "UTC"))
     if config_error:
         alarm("critical", f"configurazione di SAGE non leggibile: {config_error}")
     groups = assign_groups(nodes, cfg.groups)[0] if cfg else {}
-    if state.get("halted"):
-        alarm("critical", f"ondate FERME: {state.get('halt_reason')}")
+    ctl = controller_status(controller, lease, deployment, local_now)
+    if ctl["halted"]:
+        alarm("critical", f"SAGE FERMO: {ctl['halt_reason']}")
+    if ctl["suspended"]:
+        alarm("warning", "controllore spento: nessun giro finché non lo riattivi")
+    elif not ctl["alive"]:
+        alarm("critical", "controllore fermo: non dà segni di vita da più di 5 minuti")
+    if ctl["error"]:
+        alarm("warning", f"ultimo giro: {ctl['error']}")
+    if ctl["running"]:
+        alarm("info", f"remediation in corso su {ctl['running']}")
     if report and not report.get("kev_available", True):
-        alarm("warning", "catalogo KEV non disponibile all'ultimo giro: nessuna CVE non affetta")
+        alarm(
+            "warning", "catalogo KEV non disponibile all'ultimo controllo: nessuna CVE non affetta"
+        )
     for w in report.get("warnings") or []:
         alarm("warning", w)
-
-    # Il CronJob gira nel suo fuso; senza, in quello del controller (di solito UTC).
-    tz_name = (cronjob or {}).get("time_zone") or (cfg.timezone if cfg else None) or "UTC"
-    local_now = now.astimezone(ZoneInfo(tz_name))
-    next_scan = None
-    if cronjob:
-        if cronjob.get("suspend"):
-            alarm("warning", "giri automatici sospesi")
-        else:
-            next_scan = schedule.next_run(cronjob["schedule"], local_now)
-        if cronjob.get("active"):
-            alarm("info", "giro in corso")
-    else:
-        alarm("critical", "CronJob dello scan non trovato: SAGE è installato?")
-
-    generated = _parse(report.get("generated_at"))
     if not report:
-        alarm("warning", "nessun report: SAGE non ha ancora completato un giro")
-    elif generated and cronjob and not cronjob.get("suspend"):
-        period = cron_period(cronjob["schedule"], local_now)
-        if period and now - generated > 2 * period + timedelta(hours=1):
-            alarm("critical", "ultimo report troppo vecchio: i giri non stanno finendo")
+        alarm("warning", "nessun report: SAGE non ha ancora completato un controllo")
 
+    hours = cfg.policy.urgent_deadline_hours if cfg else 6
+    urgent = urgent_deadlines(state, report, hours)
     names = sorted(set(report.get("nodes") or {}) | {n for n, g in groups.items() if g is not None})
     by_name = {n.name: n for n in nodes}
-    wave_state = state.get("nodes") or {}
+    waves = (controller or {}).get("nodes") or {}
+    results = ((controller or {}).get("cycle") or {}).get("results") or {}
     node_rows = [
         node_status(
             by_name.get(name),
@@ -318,18 +379,19 @@ def build_status(
             groups.get(name),
             (report.get("nodes") or {}).get(name),
             (report.get("plans") or {}).get(name),
-            wave_state.get(name) or {},
+            waves.get(name) or {},
+            results.get(name),
             (report.get("profiles") or {}).get(name),
+            urgent.get(name, []),
             local_now,
         )
         for name in names
     ]
     node_rows.sort(key=lambda r: (r["order"] is None, r["order"] or 0, not r["canary"], r["name"]))
     for row in node_rows:
-        if row["wave"]["status"] == "running":
-            alarm("info", f"remediation in corso su {row['name']}")
         if row["level"] == "critical":
             alarm("critical", f"{row['name']}: " + "; ".join(row["reasons"]))
+    deadlines = [u["deadline"] for items in urgent.values() for u in items]
 
     with_work = [r for r in node_rows if r["plan"]["advisories"] or r["plan"]["remove"]]
     totals = {
@@ -338,6 +400,9 @@ def build_status(
         "advisories": sum(r["plan"]["advisories"] for r in node_rows),
         "deferred": sum(len(r["plan"]["deferred"]) for r in node_rows),
         "kev": len({c for r in node_rows for c in r["kev"]}),
+        "urgent": sum(len(items) for items in urgent.values()),
+        "next_deadline": _iso(min(deadlines)) if deadlines else None,
+        "deadline_hours": hours,
         "levels": dict(Counter(r["level"] for r in node_rows)),
         "llm_calls": report.get("llm_calls"),
     }
@@ -348,21 +413,16 @@ def build_status(
         "sage_version": report.get("version"),
         "report_at": report.get("generated_at"),
         "dry_run": report.get("dry_run", True),
-        "schedule": cronjob.get("schedule") if cronjob else None,
-        "suspended": bool(cronjob and cronjob.get("suspend")),
-        "next_scan": _iso(next_scan),
-        "last_success": cronjob.get("last_success") if cronjob else None,
+        "controller": ctl,
         "alarms": alarms,
         "totals": totals,
         "nodes": node_rows,
         "groups": [
-            {"name": g.name, "order": g.order, "canary": g.canary, "window": g.window}
+            {"name": g.name, "order": g.order, "canary": g.canary}
             for g in sorted(cfg.groups, key=lambda g: g.order)
         ]
         if cfg
         else [],
-        "messages": report.get("messages") or [],
-        "halted": bool(state.get("halted")),
         "cves": cve_table(report),
         "history": parse_history(history_text),
     }
@@ -396,8 +456,10 @@ class Source:
             nodes=self.kube.list_nodes(),
             report=report,
             state=self.kube.read_json(f"{r}-state"),
+            controller=self.kube.read_json(f"{r}-controller"),
+            lease=self.kube.read_lease(f"{r}-controller"),
+            deployment=self.kube.read_deployment(f"{r}-controller"),
             history_text=self.kube.read_text(f"{r}-history", "history.jsonl"),
-            cronjob=self.kube.cronjob(f"{r}-scan"),
             now=datetime.now().astimezone(),
         )
         return status, (report or {}).get("vex")

@@ -26,10 +26,15 @@ rules:
       - {{ include "sage.fullname" . }}-report
       - {{ include "sage.fullname" . }}-state
       - {{ include "sage.fullname" . }}-history
+      - {{ include "sage.fullname" . }}-controller
     verbs: ["get"]
-  - apiGroups: ["batch"]
-    resources: ["cronjobs"]
-    resourceNames: [{{ include "sage.fullname" . }}-scan]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: [{{ include "sage.fullname" . }}-controller]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: [{{ include "sage.fullname" . }}-controller]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

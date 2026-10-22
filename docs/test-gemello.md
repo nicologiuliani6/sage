@@ -1,7 +1,11 @@
 # Guida al primo test sul gemello
 
 Obiettivo: installare SAGE sul cluster di test con l'installer, farlo girare **in simulazione**,
-leggere le decisioni e solo alla fine provare una remediation vera sul canary.
+leggere le decisioni e solo alla fine passare al vivo.
+
+SAGE ha un **controllore sempre acceso** (ADR-0015) che fa il giro dei nodi: controllo completo,
+poi un nodo alla volta (prima i worker con il canary per primo, poi i master), pausa, da capo.
+Ogni remediation gira in un Job su un altro nodo: un nodo non modifica mai se stesso.
 
 ## 0. Prerequisiti (una volta sola)
 
@@ -40,12 +44,13 @@ righe normali). Le pagine, nell'ordine:
 3. **Gruppi**: la proposta viene da Kubernetes (ruolo control-plane: master; GPU dichiarate:
    gpu; gli altri: worker). Invio la conferma. *Sposta i nodi tra i gruppi* apre una vista a
    colonne, una per gruppo: frecce per muoversi, spazio sposta il nodo nella colonna accanto,
-   `c` lo segna come canary. Da *Modifica un gruppo* si cambiano ordine, kernel, finestra,
-   parallelismo, rimozioni e mitigazioni.
+   `c` lo segna come canary. Da *Modifica un gruppo* si cambiano ordine nel giro, canary, kernel
+   (nel giro o solo a mano), rimozioni e mitigazioni.
 4. **LLM**: URL dell'endpoint compatibile OpenAI e chiave API (non viene mostrata). L'installer
    legge dall'endpoint l'elenco dei modelli e lo fa scegliere. Si può aggiungere una riserva.
    I limiti di richieste (HTTP 429) li gestisce SAGE da solo: aspetta e riprova.
-5. **Frequenza**, fuso orario, eventuale proxy HTTP dei pod.
+5. **Pausa tra un giro e il successivo** (oppure controllore spento), fuso orario, eventuale
+   proxy HTTP dei pod.
 6. **Riepilogo** e **nota per lo storico** (facoltativa): solo dopo la conferma tocca il
    cluster. Poi può lanciare un primo giro e mostrarne il log.
 
@@ -68,13 +73,13 @@ ssh -L 8080:localhost:8080 <utente>@<IP del master>
 ```
 
 In alto gli allarmi, poi quanto manca (nodi senza azioni in sospeso, advisory da applicare, CVE
-KEV aperte), le ondate con il canary, una scheda per nodo con i pacchetti e il motivo di ogni
+KEV aperte, CVE gravi con la scadenza), il giro in corso nodo per nodo, una scheda per nodo con i pacchetti e il motivo di ogni
 decisione, le CVE ordinate per urgenza e lo storico. Si aggiorna da sola ogni minuto.
 
 ### Dal log e dal report
 
 Alla fine del log c'è il riepilogo per nodo: quanti pacchetti per azione, i pacchetti non
-"aggiorna" con il motivo, il piano e cosa farebbe la prossima ondata. Il report completo
+"aggiorna" con il motivo e il piano. Il report completo
 (decisioni, prove, VEX):
 
 ```bash
@@ -104,29 +109,32 @@ girare e quelli con advisory che non servono a nessun servizio. Se un nodo usa q
 Kubernetes che deve restare (agent di backup, NFS, strumenti di amministrazione), dichiaralo
 dall'installer: *Modifica il cluster: servizi aggiuntivi dei nodi* (ADR-0013).
 
-## 4. Prima remediation vera, sul canary
+## 4. Al vivo
 
-Rilancia l'installer e scegli **Passa al vivo** (chiede conferma), poi **Lancia un giro adesso**.
-Nel log: `remediation avviata su <canary>`. Per seguirla:
+Rilancia l'installer e scegli **Passa al vivo** (chiede conferma). Dal giro successivo (o subito
+con **Lancia un giro adesso**) il controllore sistema i nodi uno alla volta: il canary dei
+worker, gli altri worker, poi i master. Per seguire un nodo:
 
 ```bash
+kubectl -n sage logs deploy/sage-controller -f        # cosa fa il controllore
 kubectl -n sage get jobs -l sage.io/role=remediate
 kubectl -n sage logs -f job/<nome-del-job-sage-fix>
 ```
 
-Il Job gira su un altro nodo: cordon, drain, aggiornamenti, riavvio se serve, attesa del nodo
-Ready, uncordon. Il giro successivo vede l'esito e, dopo l'osservazione del canary, passa agli
-altri worker; i master per ultimi e il kernel solo nella finestra.
+Il Job di un nodo gira su un altro nodo: cordon, drain, aggiornamenti, riavvio se serve, attesa
+del nodo Ready, uncordon. Appena finisce, il controllore passa al nodo successivo. Se il nodo da
+sistemare è quello del controllore, il drain lo sposta su un altro nodo e il giro riprende da lì.
 
 ## Se qualcosa va storto
 
-- **Fermare tutto**: installer → *Sospendi i giri*, oppure
-  `kubectl -n sage patch cronjob sage-scan -p '{"spec":{"suspend":true}}'`.
+- **Fermare tutto**: installer → *Spegni il controllore*, oppure
+  `kubectl -n sage scale deploy/sage-controller --replicas=0`.
 - **Tornare alla simulazione**: installer → *Torna alla simulazione*.
 - **Remediation fallita**: SAGE ha fatto rollback e lasciato il nodo in cordon. Controlla il
-  nodo, `kubectl uncordon <nodo>`, poi sblocca le ondate con
-  `kubectl -n sage create configmap sage-resume`: il giro successivo le riprende e cancella la
-  ConfigMap.
+  nodo, `kubectl uncordon <nodo>`, poi `kubectl -n sage create configmap sage-resume`: il
+  controllore riprende dal nodo successivo e cancella la ConfigMap.
+- **Controllore fermo** (allarme nella dashboard): `kubectl -n sage logs deploy/sage-controller`.
+  Kubernetes lo riavvia da solo se si blocca; riparte dal punto salvato.
 - **Nessun report da un nodo**: SSH. Rilancia l'installer (*Riconfigura*): ricontrolla accesso,
   sudo e chiavi host di tutti i nodi scelti.
 - **Il pod non parte (ErrImagePull)**: pacchetto GHCR ancora privato. Rendilo pubblico o fai

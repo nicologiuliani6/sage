@@ -19,7 +19,7 @@ gestire e prepari tutto il resto.
   tra i gruppi, fatti con `termios` e sequenze ANSI. Alla chiusura ristampa i messaggi nel
   terminale normale. Con `--no-tui` o senza terminale interattivo, domande su righe.
 - **Passi**: nodi (i non supportati sono visibili ma non selezionabili), accesso SSH, gruppi
-  proposti dai dati di Kubernetes (control-plane: master per ultimi con finestra; GPU: gpu con
+  proposti dai dati di Kubernetes (control-plane: master per ultimi; GPU: gpu con
   kernel manuale; gli altri: worker), LLM, frequenza, proxy, immagine, riepilogo e conferma.
   Solo dopo la conferma tocca il cluster.
 - **LLM generico**: URL e chiave di un endpoint compatibile OpenAI, modello scelto dall'elenco
@@ -34,7 +34,8 @@ gestire e prepari tutto il resto.
   host si registrano al primo contatto dal master; una chiave host cambiata richiede una
   conferma esplicita.
 - **Rilanciabile**: su un'installazione esistente parte dai valori attuali e offre
-  riconfigurazione, passaggio al vivo, sospensione, un giro immediato e disinstallazione (che
+  riconfigurazione, passaggio al vivo, spegnimento del controllore, un giro immediato e
+  disinstallazione (che
   toglie anche la chiave dai nodi e le etichette). Una nuova installazione è sempre in
   simulazione: il vivo è un'azione separata, con conferma.
 - **Distribuzione**: per un tag `vX.Y.Z` la CI pubblica una release con l'installer, il chart e

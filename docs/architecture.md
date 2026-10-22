@@ -1,13 +1,16 @@
 # Architettura
 
 SAGE decide, per ogni pacchetto vulnerabile di ogni nodo, se la CVE si applica davvero e cosa fare.
-Gira dentro il cluster che protegge, senza dipendere da ciò che aggiorna. Nessun processo resta
-acceso: ogni giro è un pod che nasce e finisce.
+Gira dentro il cluster che protegge, senza dipendere da ciò che aggiorna: un controllore sempre
+acceso fa il giro dei nodi e affida il lavoro pesante a Job che nascono e finiscono (ADR-0015).
 
 ## Flusso
 
 ```
-sage scan (CronJob, una sola istanza, ogni N ore)
+sage controller (Deployment, una copia attiva grazie a un Lease, stato in ConfigMap)
+  giro:  controllo completo → remediation nodo per nodo → pausa → da capo
+
+sage scan (Job, creato dal controllore a ogni giro)
   1. nodi e gruppi     API Kubernetes + label selector della configurazione
   2. raccolta          collect.yml via SSH sui nodi con un gruppo
   3. fonti             CISA KEV, FIRST EPSS, record CVE (CVE Program + arricchimento CISA)
@@ -16,14 +19,15 @@ sage scan (CronJob, una sola istanza, ogni N ore)
                          verifica delle condizioni con i fatti raccolti sul nodo
                          stop anticipato appena ogni nodo è deciso
   5. decisione         OPA: skip | remove | update | not_affected | mitigate
-  6. stato e report    ConfigMap: stato delle ondate, cache LLM, report con VEX
-  7. ondate            se serve e nessun Job è in corso: un Job di remediation
-                         ordine dei gruppi → canary del gruppo → osservazione → resto
+  6. report            piani per nodo, CVE gravi con data di scoperta, VEX
+
+remediation            un nodo alla volta: gruppi in ordine (master per ultimi), canary per primo;
+                       nodi non Ready, in cordon o non raggiunti: saltati in quel giro
 
 sage remediate (Job, mai sul nodo bersaglio)
   remediate.yml: cordon → drain → dnf / rimozione / blocco moduli → riavvio se serve
                  → nodo Ready → (master: apiserver, etcd) → uncordon → controlli di salute
-  errore → rollback della transazione dnf, nodo in cordon, ondate ferme fino a `sage resume`
+  errore → rollback della transazione dnf, nodo in cordon, tutto fermo fino a `<release>-resume`
 ```
 
 ## Il ruolo dell'LLM
@@ -52,16 +56,17 @@ contro uno schema e messe in cache per CVE e pacchetto.
 
 ## Gruppi di nodi
 
-Ogni gruppo (label selector) ha ordine, canary e tempo di osservazione, concorrenza, regola per
-il kernel (`auto`, `window`, `manual`), modalità di drain, finestre, permessi di rimozione e
+Ogni gruppo (label selector) ha ordine nel giro, canary (il primo nodo del gruppo), regola per il
+kernel (`auto`: nel giro; `manual`: mai in automatico), modalità di drain, permessi di rimozione e
 mitigazione, controlli di salute. I nodi fuori da ogni gruppo non vengono mai toccati.
 
 ## Alta affidabilità
 
 | Elemento | Meccanismo |
 |---|---|
-| Control plane | 3 master, quorum etcd 2/3; CronJob e Job gestiti dal controller-manager con leader election |
-| Scan | CronJob con `concurrencyPolicy: Forbid`; ogni giro è ripetibile senza effetti doppi |
+| Control plane | 3 master, quorum etcd 2/3; Deployment e Job gestiti dal controller-manager con leader election |
+| Controllore | una copia attiva (Lease), Recreate, livenessProbe; ogni passo salvato prima di eseguirlo, ripresa da un altro nodo dopo drain o crash |
+| Controllo | Job con tempo massimo; rilanciato se scompare; ripetibile senza effetti doppi |
 | Remediation | un Job per nodo, mai sul nodo bersaglio, nessun nuovo tentativo automatico |
 | Stato | ConfigMap in etcd |
 | LLM | catena di endpoint; modalità sicura senza LLM; il gruppo che ospita l'LLM si tocca solo con una riserva funzionante |

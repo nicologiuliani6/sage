@@ -7,6 +7,7 @@ import gzip
 import json
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 STATE_KEY = "data.json.gz"
@@ -45,7 +46,10 @@ class KubeApi(Protocol):
     def list_jobs(self, label_selector: str) -> list[JobInfo]: ...
     def create_job(self, manifest: dict[str, Any]) -> None: ...
     def pop_flag(self, name: str) -> bool: ...
-    def cronjob(self, name: str) -> dict[str, Any] | None: ...
+    def set_flag(self, name: str) -> None: ...
+    def acquire_lease(self, name: str, holder: str, seconds: int) -> bool: ...
+    def read_lease(self, name: str) -> dict[str, Any] | None: ...
+    def read_deployment(self, name: str) -> dict[str, Any] | None: ...
 
 
 def encode(data: dict[str, Any]) -> str:
@@ -166,28 +170,105 @@ class Kube:
         self.core.delete_namespaced_config_map(name, self.namespace)
         return True
 
-    def cronjob(self, name: str) -> dict[str, Any] | None:
-        """Pianificazione e ultime esecuzioni del CronJob `name`."""
+    def set_flag(self, name: str) -> None:
+        """Crea la ConfigMap `name` come segnale per il controllore (se non c'è già)."""
+        from kubernetes.client.exceptions import ApiException
+
+        body = self._client.V1ConfigMap(
+            metadata=self._client.V1ObjectMeta(name=name, labels={"app.kubernetes.io/name": "sage"})
+        )
+        try:
+            self.core.create_namespaced_config_map(self.namespace, body)
+        except ApiException as exc:
+            if exc.status != 409:
+                raise
+
+    def _lease_api(self):
+        return self._client.CoordinationV1Api()
+
+    def acquire_lease(self, name: str, holder: str, seconds: int) -> bool:
+        """Prende o rinnova il Lease `name`. False se lo tiene un altro e non è scaduto.
+
+        Gli aggiornamenti usano il resourceVersion letto: se due copie ci provano insieme,
+        una riceve un conflitto (409) e perde.
+        """
+        from kubernetes.client.exceptions import ApiException
+
+        api = self._lease_api()
+        now = datetime.now(UTC)
+        try:
+            lease = api.read_namespaced_lease(name, self.namespace)
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+            body = self._client.V1Lease(
+                metadata=self._client.V1ObjectMeta(
+                    name=name, labels={"app.kubernetes.io/name": "sage"}
+                ),
+                spec=self._client.V1LeaseSpec(
+                    holder_identity=holder,
+                    lease_duration_seconds=seconds,
+                    acquire_time=now,
+                    renew_time=now,
+                    lease_transitions=0,
+                ),
+            )
+            try:
+                api.create_namespaced_lease(self.namespace, body)
+                return True
+            except ApiException as exc2:
+                if exc2.status == 409:
+                    return False
+                raise
+        spec = lease.spec
+        expired = spec.renew_time is None or now - spec.renew_time > timedelta(
+            seconds=spec.lease_duration_seconds or seconds
+        )
+        if spec.holder_identity != holder and not expired:
+            return False
+        if spec.holder_identity != holder:
+            spec.holder_identity = holder
+            spec.acquire_time = now
+            spec.lease_transitions = (spec.lease_transitions or 0) + 1
+        spec.renew_time = now
+        spec.lease_duration_seconds = seconds
+        try:
+            api.replace_namespaced_lease(name, self.namespace, lease)
+        except ApiException as exc:
+            if exc.status == 409:
+                return False
+            raise
+        return True
+
+    def read_lease(self, name: str) -> dict[str, Any] | None:
         from kubernetes.client.exceptions import ApiException
 
         try:
-            cj = self.batch.read_namespaced_cron_job(name, self.namespace)
+            lease = self._lease_api().read_namespaced_lease(name, self.namespace)
         except ApiException as exc:
             if exc.status == 404:
                 return None
             raise
-        status = cj.status
-
-        def iso(value: Any) -> str | None:
-            return value.isoformat() if value else None
-
+        spec = lease.spec
         return {
-            "schedule": cj.spec.schedule,
-            "time_zone": cj.spec.time_zone,
-            "suspend": bool(cj.spec.suspend),
-            "last_schedule": iso(status.last_schedule_time if status else None),
-            "last_success": iso(status.last_successful_time if status else None),
-            "active": len(status.active or []) if status else 0,
+            "holder": spec.holder_identity,
+            "renew_time": spec.renew_time.isoformat() if spec.renew_time else None,
+            "duration": spec.lease_duration_seconds,
+        }
+
+    def read_deployment(self, name: str) -> dict[str, Any] | None:
+        """Copie volute e pronte del Deployment `name` (0 volute = controllore spento)."""
+        from kubernetes.client.exceptions import ApiException
+
+        try:
+            dep = self._client.AppsV1Api().read_namespaced_deployment(name, self.namespace)
+        except ApiException as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return {
+            "replicas": dep.spec.replicas,
+            "ready": (dep.status.ready_replicas or 0) if dep.status else 0,
         }
 
 

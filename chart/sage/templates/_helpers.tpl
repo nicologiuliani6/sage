@@ -29,13 +29,15 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- end -}}
 
 {{/*
-Pod di SAGE, identico per lo scan (CronJob) e per la remediation (Job): stessa immagine,
-stessi segreti, stessi permessi. Parametri: root (contesto) e args (argomenti del comando).
+Pod di SAGE, lo stesso per il controllore (Deployment), il controllo (Job) e la remediation
+(Job): stessa immagine, stessi permessi. Parametri: root (contesto), args (argomenti),
+restartPolicy (Never per i Job, Always per il controllore), noSsh (true: niente chiave SSH,
+che serve a controllo e remediation ma non al controllore) e probe (livenessProbe).
 */}}
 {{- define "sage.podSpec" -}}
 {{- $root := .root -}}
 serviceAccountName: {{ include "sage.fullname" $root }}
-restartPolicy: Never
+restartPolicy: {{ .restartPolicy | default "Never" }}
 {{- with $root.Values.imagePullSecrets }}
 imagePullSecrets:
   {{- toYaml . | nindent 2 }}
@@ -73,27 +75,35 @@ containers:
       readOnlyRootFilesystem: true
       capabilities:
         drop: ["ALL"]
+    {{- with .probe }}
+    livenessProbe:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     resources:
       {{- toYaml $root.Values.resources | nindent 6 }}
     volumeMounts:
       - name: config
         mountPath: /etc/sage/config
         readOnly: true
+      {{- if not .noSsh }}
       - name: ssh
         mountPath: /etc/sage/ssh
         readOnly: true
+      {{- end }}
       - name: tmp
         mountPath: /tmp
 volumes:
   - name: config
     configMap:
       name: {{ include "sage.fullname" $root }}-config
+  {{- if not .noSsh }}
   - name: ssh
     secret:
       secretName: {{ $root.Values.secrets.ssh }}
       # Leggibile dal gruppo (fsGroup): sage copia la chiave in /tmp con permessi
       # 0600 prima di usarla, come richiede OpenSSH.
       defaultMode: 0440
+  {{- end }}
   - name: tmp
     emptyDir: {}
 {{- with $root.Values.nodeSelector }}

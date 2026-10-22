@@ -5,14 +5,14 @@ Stato: accettata (2026-10-22)
 ## Contesto
 
 Il riepilogo di ogni giro è nel log del Job e il report completo in una ConfigMap compressa:
-per sapere come sta un nodo, se c'è un allarme o quanto manca alla fine delle ondate bisogna
+per sapere come sta un nodo, se c'è un allarme o a che punto è il giro bisogna
 leggere log o decodificare JSON. Serve una vista d'insieme, ma senza aprire un nuovo modo di
 modificare il cluster né una nuova superficie d'attacco.
 
 ## Decisione
 
 - **Sola lettura**: la dashboard mostra quello che SAGE ha già scritto (report, stato delle
-  ondate, storico, CronJob, nodi) e non modifica niente. Le azioni restano nell'installer, dove
+  controllore, storico, Lease, nodi) e non modifica niente. Le azioni restano nell'installer, dove
   ogni modifica finisce nello storico con l'identità di chi la fa (ADR-0012).
 - **Nello stesso pacchetto**: `sage dashboard`, server HTTP della libreria standard e una pagina
   statica (HTML, JavaScript e CSS nel pacchetto `sage.web`), nessuna dipendenza nuova e nessuna
@@ -22,11 +22,13 @@ modificare il cluster né una nuova superficie d'attacco.
   può farlo lo decide l'RBAC del cluster, quindi non serve un login proprio. Le richieste con
   un `Host` diverso da localhost vengono rifiutate (difesa dal DNS rebinding).
 - **Permessi minimi**: ServiceAccount proprio con `get` solo sulle ConfigMap del report, dello
-  stato e dello storico e sul CronJob dello scan (per nome), e lettura dei nodi. Non monta la
+  stato, del controllore e dello storico, sul Lease e sul Deployment del controllore (per nome),
+  e lettura dei nodi. Non monta la
   chiave SSH né la chiave dell'LLM.
-- **Contenuti**: allarmi (ondate ferme, remediation fallite, nodi non Ready, CVE KEV aperte,
-  profilo non affidabile, giri sospesi, report vecchio), avanzamento (nodi senza azioni in
-  sospeso, advisory da applicare, rimandi con la prossima finestra, canary in osservazione,
+- **Contenuti**: allarmi (SAGE fermo, controllore spento o senza segni di vita, remediation
+  fallite, nodi non Ready, CVE KEV aperte, CVE gravi oltre la scadenza,
+  profilo non affidabile), avanzamento (nodi senza azioni in
+  sospeso, advisory da applicare, nodi già passati nel giro, scadenza delle CVE gravi,
   prossimo giro), una scheda per nodo con il motivo di ogni decisione, le CVE ordinate per
   urgenza con filtri, lo storico e il download del VEX.
 - **Pagina sicura per costruzione**: Content-Security-Policy che permette solo risorse della

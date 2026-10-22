@@ -14,8 +14,10 @@ Per ogni pacchetto vulnerabile SAGE si chiede *"questa CVE ci tocca?"* e sceglie
 
 Un LLM legge i dati pubblici della CVE e ne estrae le **condizioni** di sfruttabilità; il nodo le
 **verifica**. L'LLM non può dichiarare "siamo al sicuro" sulla parola, e nessun dato dei nodi gli
-viene inviato. La decisione finale è di OPA. Le azioni procedono a ondate per gruppi di nodi, con
-un canary per gruppo, un nodo alla volta e rollback automatico.
+viene inviato. La decisione finale è di OPA. Un controllore sempre acceso fa il giro dei nodi:
+controllo completo, poi un nodo alla volta (gruppi in ordine, canary per primo, master per
+ultimi, mai un nodo che modifica se stesso), rollback automatico, e da capo
+([ADR-0015](docs/adr/0015-controllore-in-loop.md)).
 
 ## Installazione
 
@@ -30,10 +32,10 @@ L'installer occupa il terminale e fa una domanda per pagina: mostra i nodi e fa 
 gestire, propone i gruppi dai dati di Kubernetes (modificabili in una vista a colonne), crea e
 installa la chiave SSH dedicata, configura l'LLM (qualsiasi endpoint compatibile OpenAI),
 installa il chart con Helm e lancia un primo giro in simulazione. Rilanciato, riconfigura, passa
-al vivo, sospende o disinstalla; ogni modifica finisce in uno storico con chi, quando e perché
+al vivo, spegne il controllore o disinstalla; ogni modifica finisce in uno storico con chi, quando e perché
 ([ADR-0012](docs/adr/0012-storico-delle-modifiche.md)).
 Lo stato si guarda dalla dashboard di sola lettura (installer, *Apri la dashboard*): allarmi,
-sicurezza di ogni nodo, avanzamento delle ondate, CVE per urgenza
+sicurezza di ogni nodo, giro in corso, CVE gravi con la scadenza, CVE per urgenza
 ([ADR-0014](docs/adr/0014-dashboard-sola-lettura.md)).
 Funziona con nodi della famiglia RHEL (la remediation usa dnf). Dettagli:
 [ADR-0011](docs/adr/0011-installer-interattivo.md); passi completi nella
@@ -41,7 +43,7 @@ Funziona con nodi della famiglia RHEL (la remediation usa dnf). Dettagli:
 
 ## Stato
 
-Prima versione completa: raccolta, analisi, decisione, report e VEX, remediation a ondate,
+Prima versione completa: raccolta, analisi, decisione, report e VEX, controllore con remediation nodo per nodo,
 installer. In test sul gemello. Roadmap in [docs/roadmap.md](docs/roadmap.md).
 
 ## Principi
@@ -63,7 +65,7 @@ Architettura: [docs/architecture.md](docs/architecture.md). Decisioni: [docs/adr
 src/sage/        codice Python (comando `sage`: scan, remediate, resume, check-config)
 ansible/         collect.yml e remediate.yml (usati da SAGE e a mano in emergenza)
 policy/          regole OPA (Rego) e relativi test
-chart/sage/      chart Helm: CronJob, modello del Job di remediation, RBAC
+chart/sage/      chart Helm: controllore, modelli dei Job di controllo e remediation, dashboard, RBAC
 installer/       installer interattivo (un file, Python 3.9 senza dipendenze)
 ci/              script della CI e della release (i workflow li chiamano e basta)
 examples/        configurazione e valori d'esempio

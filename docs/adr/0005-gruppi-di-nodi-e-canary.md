@@ -1,6 +1,6 @@
 # ADR-0005: Gruppi di nodi e canary per gruppo
 
-Stato: accettata (2026-10-21)
+Stato: accettata (2026-10-21); concorrenza, osservazione e finestre tolte dall'[ADR-0015](0015-controllore-in-loop.md)
 
 ## Contesto
 
@@ -11,8 +11,9 @@ Su nodi HPC il drain può interrompere job di lunga durata.
 ## Decisione
 
 - I gruppi sono definiti in configurazione tramite label selector; nessun gruppo è implicito.
-- Ogni gruppo ha: ordine, canary, concorrenza, regola per il kernel (`auto`, `window`, `manual`),
-  modalità di drain (`evict`, `wait-empty`), finestra di manutenzione, permesso di rimozione.
+- Ogni gruppo ha: ordine, canary (il primo nodo del gruppo nel giro), regola per il kernel
+  (`auto`, `manual`), modalità di drain (`evict`, `wait-empty`), permessi di rimozione e
+  mitigazione.
 - La decisione è sempre per nodo; si raggruppano solo nodi con contesto identico per non ripetere
   chiamate all'LLM.
 - I nodi fuori da ogni gruppo non vengono mai toccati e vengono segnalati.

@@ -59,9 +59,6 @@ SUPPORTED_OS = re.compile(r"rocky|red hat|rhel|almalinux|centos stream|oracle li
 NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 # Unit systemd o pacchetto (stessa regola della configurazione di SAGE).
 SERVICE_RE = re.compile(r"^[A-Za-z0-9@._:+-]{1,128}$")
-DAYS = "(mon|tue|wed|thu|fri|sat|sun)"
-WINDOW_RE = re.compile(rf"^{DAYS}(,{DAYS})* ([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
-DEFAULT_WINDOW = "sat 02:00-06:00"
 DEFAULT_POLICY = {
     "protected_packages": [
         "kernel*",
@@ -104,14 +101,15 @@ GENERIC_HOST_PARTS = {
     "internal",
     "localhost",
 }
-SCHEDULES = [
-    ("ogni 6 ore", "0 */6 * * *"),
-    ("ogni 12 ore", "0 */12 * * *"),
-    ("una volta al giorno, alle 03:00", "0 3 * * *"),
+# Pausa tra la fine di un giro e l'inizio del successivo, in minuti.
+PAUSES = [
+    ("30 minuti", 30),
+    ("nessuna: si riparte subito", 0),
+    ("2 ore", 120),
+    ("6 ore", 360),
 ]
 KERNEL_MODES = [
-    ("auto", "subito, appena serve (nodo svuotato e riavviato)"),
-    ("window", "solo nella finestra di manutenzione"),
+    ("auto", "nel giro, come il resto (nodo svuotato e riavviato)"),
     ("manual", "mai in automatico (es. nodi GPU con driver legati al kernel)"),
 ]
 PULL_ERRORS = ("ErrImagePull", "ImagePullBackOff", "InvalidImageName")
@@ -210,12 +208,14 @@ GROUP_KEYS = (
     "selector",
     "order",
     "kernel",
-    "window",
     "canary",
-    "concurrency",
     "allow_remove",
     "allow_mitigate",
     "requires_fallback",
+    # campi di versioni precedenti, non più usati: non vengono riscritti
+    "window",
+    "concurrency",
+    "canary_soak_minutes",
 )
 
 
@@ -223,10 +223,8 @@ GROUP_KEYS = (
 class Group:
     name: str
     order: int
-    kernel: str = "window"
-    window: str | None = None
+    kernel: str = "auto"
     canary: str | None = None
-    concurrency: int = 1
     allow_remove: bool = False
     allow_mitigate: bool = False
     requires_fallback: bool = False
@@ -239,14 +237,11 @@ class Group:
             selector=f"{GROUP_LABEL}={self.name}",
             order=self.order,
             kernel=self.kernel,
-            concurrency=self.concurrency,
             allow_remove=self.allow_remove,
             allow_mitigate=self.allow_mitigate,
         )
-        for key in ("window", "canary"):
-            value = getattr(self, key)
-            if value:
-                out[key] = value
+        if self.canary:
+            out["canary"] = self.canary
         if self.requires_fallback:
             out["requires_fallback"] = True
         return out
@@ -256,10 +251,9 @@ class Group:
         return cls(
             name=raw["name"],
             order=int(raw["order"]),
-            kernel=raw.get("kernel", "window"),
-            window=raw.get("window") or None,
+            # "window" (finestra di manutenzione) non esiste più: il kernel va nel giro.
+            kernel="manual" if raw.get("kernel") == "manual" else "auto",
             canary=raw.get("canary") or None,
-            concurrency=int(raw.get("concurrency", 1)),
             allow_remove=bool(raw.get("allow_remove", False)),
             allow_mitigate=bool(raw.get("allow_mitigate", False)),
             requires_fallback=bool(raw.get("requires_fallback", False)),
@@ -267,26 +261,24 @@ class Group:
         )
 
     def kernel_text(self) -> str:
-        if self.kernel == "window":
-            return f"kernel nella finestra {self.window}"
         if self.kernel == "auto":
-            return "kernel subito"
+            return "kernel nel giro"
         return "kernel solo a mano"
 
 
 def propose_groups(nodes: list[NodeInfo]) -> tuple[list[Group], dict[str, str]]:
     """Proposta iniziale: prima i worker, poi le GPU, i master per ultimi."""
     buckets = [
-        ("worker", [n for n in nodes if not n.control_plane and not n.gpus], "auto", None),
-        ("gpu", [n for n in nodes if not n.control_plane and n.gpus], "manual", None),
-        ("master", [n for n in nodes if n.control_plane], "window", DEFAULT_WINDOW),
+        ("worker", [n for n in nodes if not n.control_plane and not n.gpus], "auto"),
+        ("gpu", [n for n in nodes if not n.control_plane and n.gpus], "manual"),
+        ("master", [n for n in nodes if n.control_plane], "auto"),
     ]
     groups, assignment = [], {}
-    for name, members, kernel, window in buckets:
+    for name, members, kernel in buckets:
         if not members:
             continue
         canary = members[0].name if len(members) > 1 else None
-        groups.append(Group(name, len(groups) + 1, kernel, window, canary))
+        groups.append(Group(name, len(groups) + 1, kernel, canary))
         assignment.update({n.name: name for n in members})
     return groups, assignment
 
@@ -360,7 +352,7 @@ def build_values(
     release: str,
     image: str | None,
     pull_secret: str | None,
-    schedule: str,
+    pause_minutes: int,
     timezone: str,
     suspend: bool,
     ssh_user: str,
@@ -380,8 +372,9 @@ def build_values(
         values["image"] = {**values.get("image", {}), **split_image(image)}
     if pull_secret:
         values["imagePullSecrets"] = [{"name": pull_secret}]
-    values["schedule"] = schedule
-    values["timeZone"] = timezone
+    # Versioni precedenti: CronJob con orario fisso, sostituito dal controllore in loop.
+    values.pop("schedule", None)
+    values.pop("timeZone", None)
     values["suspend"] = suspend
     values["dryRun"] = bool(base.get("dryRun", True))
     values["secrets"] = {
@@ -392,6 +385,7 @@ def build_values(
     values["extraEnv"] = without_proxy(values.get("extraEnv") or []) + proxy
     config = values.setdefault("config", {})
     config["timezone"] = timezone
+    config["controller"] = {**(config.get("controller") or {}), "pause_minutes": pause_minutes}
     ssh = config.setdefault("ssh", {})
     ssh["user"] = ssh_user
     if ssh_port != 22 or "port" in ssh:
@@ -1361,6 +1355,14 @@ def who_text(kube_user: str | None) -> str:
     return f"{user}@{host}" + (f" ({kube_user})" if kube_user else "")
 
 
+def parse_k8s_time(value) -> float:
+    """'2026-10-22T17:05:03Z' -> secondi epoch (0 se manca)."""
+    if not value:
+        return 0.0
+    stamp = datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    return stamp.replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
 def history_entry(action: str, changes, note, kube_user, revision) -> dict:
     entry = {
         "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1545,7 +1547,7 @@ class Installer:
             status = (
                 f"SAGE è già installato (release {self.release}, namespace {self.ns}).\n"
                 f"Modalità: {'REALE' if live else 'simulazione'}. "
-                f"Giri automatici: {'sospesi' if suspended else 'attivi'}."
+                f"Controllore: {'spento' if suspended else 'acceso, giro continuo'}."
             )
             entries = []
             target = self.args.image or RELEASE.get("image")
@@ -1565,7 +1567,9 @@ class Installer:
                     "live",
                 ),
                 (
-                    "Riattiva i giri automatici" if suspended else "Sospendi i giri automatici",
+                    "Riaccendi il controllore"
+                    if suspended
+                    else "Spegni il controllore (nessun giro)",
                     "suspend",
                 ),
                 ("Lancia un giro adesso", "run"),
@@ -1587,7 +1591,7 @@ class Installer:
             if action == "suspend":
                 return self.toggle_suspend(current)
             if action == "run":
-                return self.run_now()
+                return self.run_now(current)
             if action == "dashboard":
                 return self.open_dashboard(current)
             if action == "history":
@@ -1683,8 +1687,8 @@ class Installer:
             "aggiornamento", [f"versione {version}", f"immagine: {old} → {target}"], note, revision
         )
         self.ui.ok(f"SAGE aggiornato alla versione {version}")
-        if self.ui.yes("Lancio subito un giro e ne mostro il log?"):
-            return self.run_now()
+        if self.ui.yes("Mostro il log del prossimo controllo?"):
+            return self.run_now(values)
         return 0
 
     def preflight(self) -> None:
@@ -1831,14 +1835,15 @@ class Installer:
 
         # 5. frequenza e rete
         ui.step(5, total, "Frequenza e rete")
-        # Per una nuova installazione i giri automatici partono attivi, salvo "mai".
+        # Per una nuova installazione il controllore parte acceso, salvo "spento".
         suspended = bool(current.get("suspend", True)) and not new
-        schedule, suspend = self.choose_schedule(current.get("schedule"), suspended)
+        current_pause = (config.get("controller") or {}).get("pause_minutes")
+        pause, suspend = self.choose_pause(current_pause, suspended)
         timezone_name = ui.ask(
             "Fuso orario",
-            current.get("timeZone") or local_timezone(),
+            config.get("timezone") or current.get("timeZone") or local_timezone(),
             lambda v: None if valid_timezone(v) else "fuso sconosciuto (es. Europe/Rome)",
-            help="Vale per gli orari dei giri e per le finestre di manutenzione dei gruppi.",
+            help="Vale per gli orari nel report, nei log e nella dashboard.",
         )
         api_ip = (
             self.kubectl(
@@ -1865,7 +1870,7 @@ class Installer:
             release=self.release,
             image=image,
             pull_secret=pull_secret,
-            schedule=schedule,
+            pause_minutes=pause,
             timezone=timezone_name,
             suspend=suspend,
             ssh_user=user,
@@ -1885,7 +1890,7 @@ class Installer:
 
         # 6. riepilogo
         ui.step(6, total, "Riepilogo")
-        summary = self.summary_text(image, groups, assignment, user, llm, schedule, values)
+        summary = self.summary_text(image, groups, assignment, user, llm, values)
         if not new:
             summary += "\n\nModifiche rispetto a ora:\n" + (
                 "\n".join(f"  {c}" for c in changes) if changes else "  nessuna"
@@ -1914,8 +1919,7 @@ class Installer:
             changes += [
                 f"utente SSH {user}",
                 "LLM: " + (llm_text(llm) or "nessuno"),
-                f"giri: {schedule} ({timezone_name}), "
-                + ("solo manuali" if suspend else "automatici")
+                ("controllore spento" if suspend else f"giro continuo, pausa {pause} minuti")
                 + ", simulazione",
             ]
             if key_note:
@@ -1927,10 +1931,10 @@ class Installer:
             new,
             help="Il log compare nel terminale normale, alla chiusura di questa schermata.",
         ):
-            return self.run_now()
+            return self.run_now(values)
         return 0
 
-    def summary_text(self, image, groups, assignment, user, llm, schedule, values) -> str:
+    def summary_text(self, image, groups, assignment, user, llm, values) -> str:
         lines = [f"Immagine   {image}"]
         suffix = common_suffix(list(assignment))
         for g in sorted(groups, key=lambda g: g.order):
@@ -1938,14 +1942,19 @@ class Installer:
                 (m[: -len(suffix)] if suffix else m) + ("*" if m == g.canary else "")
                 for m in members(assignment, g.name)
             )
-            lines.append(f"Ondata {g.order}   {g.name}: {names}  ({g.kernel_text()})")
+            lines.append(f"Gruppo {g.order}   {g.name}: {names}  ({g.kernel_text()})")
         if suffix:
             lines.append(f"           (nomi senza il suffisso comune {suffix}; * = canary)")
         lines.append(f"SSH        utente {user}, chiave dedicata")
         lines.append(f"LLM        {llm_text(llm) or 'nessuno: solo regole deterministiche'}")
         mode = "simulazione" if values["dryRun"] else "MODALITÀ REALE"
-        when = "solo quando li lanci tu" if values["suspend"] else schedule
-        lines.append(f"Giri       {when} ({values['timeZone']}), {mode}")
+        pause = values["config"]["controller"]["pause_minutes"]
+        when = (
+            "controllore spento: nessun giro"
+            if values["suspend"]
+            else f"continuo, pausa di {pause} minuti tra un giro e l'altro"
+        )
+        lines.append(f"Giri       {when}, {mode}")
         return "\n".join(lines)
 
     def ask_note(self) -> str:
@@ -2003,8 +2012,6 @@ class Installer:
                 for m in members(assignment, g.name)
             )
             extras = []
-            if g.concurrency > 1:
-                extras.append(f"{g.concurrency} nodi alla volta")
             if g.allow_remove:
                 extras.append("rimozioni")
             if g.allow_mitigate:
@@ -2071,7 +2078,7 @@ class Installer:
             check,
             help="Poi scegli quali nodi spostarci. Verrà aggiornato per ultimo.",
         )
-        return Group(name, max((g.order for g in groups), default=0) + 1, "window", DEFAULT_WINDOW)
+        return Group(name, max((g.order for g in groups), default=0) + 1, "auto")
 
     def edit_group(self, group: Group, groups, assignment) -> None:
         ui = self.ui
@@ -2079,10 +2086,9 @@ class Installer:
             group_members = members(assignment, group.name)
             options = [
                 "Fatto",
-                f"Ordine dell'ondata: {group.order}",
+                f"Ordine nel giro: {group.order}",
                 f"Canary: {group.canary or 'nessuno'}",
                 f"Aggiornamenti del kernel: {group.kernel_text()}",
-                f"Nodi aggiornati insieme: {group.concurrency}",
                 f"Rimozione dei pacchetti inutilizzati: {'sì' if group.allow_remove else 'no'}",
                 "Blocco dei moduli del kernel vulnerabili: "
                 + ("sì" if group.allow_mitigate else "no"),
@@ -2093,7 +2099,7 @@ class Installer:
             if choice == 0:
                 return
             if choice == 1:
-                order = ui.ask_int("Ordine dell'ondata (1 = per primo)", group.order)
+                order = ui.ask_int("Ordine nel giro (1 = per primo)", group.order)
                 other = next((g for g in groups if g.order == order and g is not group), None)
                 if other:
                     other.order = group.order  # scambio
@@ -2104,7 +2110,10 @@ class Installer:
                     "Canary del gruppo",
                     opts,
                     opts.index(group.canary) if group.canary in opts else 0,
-                    help="Il canary si aggiorna per primo; gli altri aspettano l'osservazione.",
+                    help=(
+                        "Il canary è il primo nodo del gruppo nel giro: se la sua remediation "
+                        "fallisce, SAGE si ferma prima di toccare gli altri."
+                    ),
                 )
                 group.canary = None if pick == 0 else opts[pick]
             elif choice == 3:
@@ -2112,22 +2121,13 @@ class Installer:
                 pick = ui.choose(
                     "Aggiornamenti del kernel",
                     [f"{k}: {d}" for k, d in KERNEL_MODES],
-                    modes.index(group.kernel) if group.kernel in modes else 1,
+                    modes.index(group.kernel) if group.kernel in modes else 0,
                     help="Un kernel nuovo richiede di svuotare e riavviare il nodo.",
                 )
                 group.kernel = modes[pick]
-                if group.kernel == "window":
-                    group.window = ui.ask(
-                        "Finestra di manutenzione",
-                        group.window or DEFAULT_WINDOW,
-                        lambda v: None if WINDOW_RE.match(v) else "formato: sat 02:00-06:00",
-                        help="Giorni e orario, es. sat 02:00-06:00 oppure sat,sun 01:00-05:00.",
-                    )
             elif choice == 4:
-                group.concurrency = ui.ask_int("Quanti nodi del gruppo insieme", group.concurrency)
-            elif choice == 5:
                 group.allow_remove = not group.allow_remove
-            elif choice == 6:
+            elif choice == 5:
                 group.allow_mitigate = not group.allow_mitigate
             else:
                 group.requires_fallback = not group.requires_fallback
@@ -2334,38 +2334,33 @@ class Installer:
         return endpoint, key or None
 
     # --- frequenza e rete
-    def choose_schedule(self, current: str | None, suspended: bool) -> tuple[str, bool]:
-        """(espressione cron, giri automatici sospesi)."""
-        options = [f"{text} ({cron})" for text, cron in SCHEDULES]
-        crons = [cron for _, cron in SCHEDULES]
-        if current and current not in crons:
-            options.insert(0, f"come ora ({current})")
-            crons.insert(0, current)
-        options.append("personalizzata (espressione cron)")
-        options.append("mai in automatico: solo quando lo lanci tu")
-        never = len(options) - 1
-        default = never if suspended else (crons.index(current) if current in crons else 0)
+    def choose_pause(self, current: int | None, suspended: bool) -> tuple[int, bool]:
+        """(minuti di pausa tra un giro e l'altro, controllore spento)."""
+        options = [text for text, _ in PAUSES]
+        values = [minutes for _, minutes in PAUSES]
+        if current is not None and current not in values:
+            options.insert(0, f"come ora ({current} minuti)")
+            values.insert(0, current)
+        options.append("altro (in minuti)")
+        options.append("spento: nessun giro finché non lo riaccendi")
+        off = len(options) - 1
+        default = off if suspended else (values.index(current) if current in values else 0)
         pick = self.ui.choose(
-            "Ogni quanto SAGE controlla i nodi?",
+            "Pausa tra un giro e il successivo",
             options,
             default,
             help=(
-                "A ogni giro SAGE analizza i nodi e decide cosa fare; in simulazione dice "
-                'cosa farebbe senza toccarli. Con "mai in automatico" i giri partono solo '
-                "dal menu dell'installer (Lancia un giro adesso)."
+                "SAGE gira in continuo: controlla tutti i nodi, li sistema uno alla volta "
+                "(prima i worker, poi i master) e ricomincia. La pausa evita di interrogare "
+                "i nodi di continuo quando non c'è niente da fare. In simulazione dice cosa "
+                "farebbe senza toccare niente."
             ),
         )
-        if pick == never:
-            return current or crons[0], True
-        if pick < len(crons):
-            return crons[pick], False
-        cron = self.ui.ask(
-            "Espressione cron",
-            current if current and current not in crons else None,
-            lambda v: None if len(v.split()) == 5 else "servono 5 campi",
-            help="Cinque campi: minuto ora giorno mese giorno-della-settimana.",
-        )
-        return cron, False
+        if pick == off:
+            return (current if current is not None else values[0]), True
+        if pick < len(values):
+            return values[pick], False
+        return self.ui.ask_int("Minuti di pausa", current or 30), False
 
     def choose_proxy(self, current: dict, ips, api_ip) -> list[dict]:
         env = {e.get("name"): e.get("value") for e in current.get("extraEnv") or []}
@@ -2610,7 +2605,7 @@ class Installer:
     def toggle_suspend(self, current: dict) -> int:
         values = copy.deepcopy(current)
         values["suspend"] = not current.get("suspend", True)
-        action = "giri sospesi" if values["suspend"] else "giri riattivati"
+        action = "controllore spento" if values["suspend"] else "controllore riacceso"
         note = self.ask_note()
         revision = self.helm_apply(values, action)
         change = f"suspend: {json.dumps(not values['suspend'])} → {json.dumps(values['suspend'])}"
@@ -2645,12 +2640,55 @@ class Installer:
             print("\ndashboard chiusa")
         return 0
 
-    def run_now(self) -> int:
+    def run_now(self, values: dict) -> int:
+        """Con il controllore acceso gli chiede un giro subito; spento, lancia solo il
+        controllo (senza remediation). In entrambi i casi mostra il log del controllo."""
         ui = self.ui
-        job = f"{self.release}-manual-{time.strftime('%m%d%H%M%S')}"
-        self.kubectl("create", "job", f"--from=cronjob/{self.release}-scan", job, ns=True)
-        self.record("giro manuale", [f"job {job}"])
-        ui.busy(f"Giro avviato (job {job}), attendo il pod...")
+        if values.get("suspend", True):
+            job = self.create_scan_job()
+            self.record("controllo manuale (controllore spento)", [f"job {job}"])
+        else:
+            since = time.time()
+            self.kubectl("create", "configmap", f"{self.release}-scan-now", ns=True, check=False)
+            self.record("giro richiesto a mano", [])
+            ui.busy("Chiesto un giro al controllore, attendo che parta il controllo...")
+            job = self.wait_scan_job(since, 120)
+            if not job:
+                ui.info(
+                    "Il controllore è in mezzo a un giro: il nuovo parte appena finisce. "
+                    "L'avanzamento si vede dalla dashboard."
+                )
+                return 0
+        return self.follow_job(job)
+
+    def create_scan_job(self) -> str:
+        template = self.kjson("get", "configmap", f"{self.release}-scan-template", ns=True)
+        text = template.get("data", {}).get("job.yaml", "")
+        if "metadata:\n" not in text:
+            raise Fail(f"modello del controllo mancante ({self.release}-scan-template)")
+        job = f"{self.release}-scan-{time.strftime('%y%m%d%H%M%S')}"
+        text = text.replace("metadata:\n", f"metadata:\n  name: {job}\n", 1)
+        self.kubectl("create", "-f", "-", ns=True, input=text)
+        return job
+
+    def wait_scan_job(self, since: float, timeout: int) -> str | None:
+        """Il primo Job di controllo creato dopo `since` (o None)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            items = self.kjson("get", "jobs", "-l", "sage.io/role=scan", ns=True).get("items", [])
+            newer = [
+                j["metadata"]["name"]
+                for j in items
+                if parse_k8s_time(j["metadata"].get("creationTimestamp")) >= since - 5
+            ]
+            if newer:
+                return sorted(newer)[-1]
+            time.sleep(3)
+        return None
+
+    def follow_job(self, job: str) -> int:
+        ui = self.ui
+        ui.busy(f"Controllo avviato (job {job}), attendo il pod...")
         deadline = time.time() + 300
         while time.time() < deadline:
             pods = self.kjson("get", "pods", "-l", f"job-name={job}", ns=True).get("items", [])
@@ -2678,7 +2716,7 @@ class Installer:
             )
         # Il log va nel terminale normale, dove resta leggibile.
         ui.close()
-        print(f"\nLog del giro (job {job}):\n")
+        print(f"\nLog del controllo (job {job}):\n")
         cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
         subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
         # Il log finisce un attimo prima che il Job risulti completato: si aspetta l'esito.
@@ -2689,7 +2727,7 @@ class Installer:
                 break
             time.sleep(2)
         if result.get("succeeded"):
-            ui.ok("giro completato")
+            ui.ok("controllo completato: il controllore prosegue con i nodi (vedi la dashboard)")
             ui.info(
                 "Report completo:\n"
                 f"  kubectl -n {self.ns} get configmap {self.release}-report "
@@ -2697,7 +2735,7 @@ class Installer:
                 "python3 -m json.tool | less"
             )
             return 0
-        ui.warn(f"il giro non è finito bene: kubectl -n {self.ns} describe job {job}")
+        ui.warn(f"il controllo non è finito bene: kubectl -n {self.ns} describe job {job}")
         return 1
 
     def uninstall(self, current: dict) -> int:

@@ -15,7 +15,7 @@ idle_context := {
 
 base := {
 	"node": {"group": "worker"},
-	"group": {"allow_remove": false, "allow_mitigate": false, "kernel": "window"},
+	"group": {"allow_remove": false, "allow_mitigate": false, "kernel": "auto"},
 	"kev_available": true,
 	"package": {"name": "cockpit-ws", "context": idle_context, "idle_confirmed": true},
 	"cves": [{"kev": false, "applicability": {"status": "affected", "verified": true}}],
@@ -127,10 +127,9 @@ test_no_mitigate_for_kev if {
 # --- pianificazione del kernel
 
 test_kernel_schedule_follows_group if {
-	win := with_pkg(base, {"name": "kernel-core"})
-	decision.schedule == "window" with input as win
-	decision.schedule == "manual" with input as object.union(win, {"group": {"kernel": "manual"}})
-	decision.schedule == "auto" with input as object.union(win, {"group": {"kernel": "auto"}})
+	k := with_pkg(base, {"name": "kernel-core"})
+	decision.schedule == "auto" with input as k
+	decision.schedule == "manual" with input as object.union(k, {"group": {"kernel": "manual"}})
 }
 
 test_userland_schedule_is_auto if decision.schedule == "auto" with input as base
