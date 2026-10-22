@@ -109,7 +109,10 @@ def write_inventory(nodes: list[Node], cfg: Config, workdir: Path) -> tuple[Path
         if not node.internal_ip:
             warnings.append(f"nodo {node.name} senza InternalIP: escluso")
             continue
-        hosts[node.name] = {"ansible_host": node.internal_ip}
+        hosts[node.name] = {
+            "ansible_host": node.internal_ip,
+            "sage_extra_services": list(cfg.extra_services.get(node.name, ())),
+        }
     inventory = {
         "all": {
             "hosts": hosts,

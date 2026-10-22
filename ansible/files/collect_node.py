@@ -16,7 +16,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# Processi dei container: i loro file sono nell'immagine, non nei pacchetti del nodo.
+CONTAINER_CGROUPS = ("kubepods", "/docker/", "docker-", "libpod-", "crio-", "cri-containerd-")
+UNIT_TYPES = "service,socket,timer"
 EXEC_DIRS = ("/usr/bin/", "/usr/sbin/", "/usr/libexec/", "/bin/", "/sbin/")
 UNIT_DIRS = ("/usr/lib/systemd/system/", "/etc/systemd/system/")
 # Stati di `systemctl is-enabled` per cui una unit può partire da sola.
@@ -124,11 +127,27 @@ def advisory_details():
 # ---------------------------------------------------------------- contesto
 
 
-def running_state():
-    """Eseguibili in esecuzione e file mappati in memoria da tutti i processi."""
-    exes, mapped = {}, set()
-    for proc in glob.glob("/proc/[0-9]*"):
+def in_container(proc):
+    """Il processo gira in un container (pod Kubernetes, Docker, Podman, CRI-O)?
+
+    Si guarda il cgroup e non il mount namespace: molti servizi di systemd hanno un
+    namespace proprio (PrivateTmp) ma usano i file del nodo.
+    """
+    cgroup = read_file(proc + "/cgroup")
+    return any(marker in cgroup for marker in CONTAINER_CGROUPS)
+
+
+def running_state(proc_root="/proc"):
+    """Eseguibili in esecuzione e file mappati in memoria dai processi del nodo.
+
+    Restituisce anche quanti processi dei container sono stati esclusi.
+    """
+    exes, mapped, skipped = {}, set(), 0
+    for proc in glob.glob(proc_root + "/[0-9]*"):
         pid = proc.rsplit("/", 1)[1]
+        if in_container(proc):
+            skipped += 1
+            continue
         try:
             exe = os.readlink(proc + "/exe")
             exes[pid] = exe.replace(" (deleted)", "")
@@ -142,7 +161,7 @@ def running_state():
                         mapped.add(parts[5].strip().replace(" (deleted)", ""))
         except OSError:
             pass
-    return exes, mapped
+    return exes, mapped, skipped
 
 
 def listening_exes(exes):
@@ -200,6 +219,8 @@ def parse_privileged(out):
 
 
 def is_idle(ctx):
+    if ctx.get("needed_by"):
+        return False  # serve a un servizio del nodo: mai inattivo
     if ctx["binaries_running"] or ctx["libraries_loaded"] or ctx["listening"]:
         return False
     for state in ctx["units"].values():
@@ -233,7 +254,7 @@ def removal_simulation(name):
     return parse_remove_simulation(out, name)
 
 
-def package_context(name, exes, mapped, listening):
+def package_context(name, exes, mapped, listening, needed_by=None):
     installed = run(["rpm", "-q", "--qf", "%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n", name]).splitlines()
     files = run(["rpm", "-ql", name]).splitlines()
     fileset = set(files)
@@ -261,6 +282,8 @@ def package_context(name, exes, mapped, listening):
         "units": unit_states(units),
         "privileged_files": privileged_files(name),
         "required_by": required_by,
+        # Servizio del nodo (o voce aggiunta) che ha bisogno di questo pacchetto.
+        "needed_by": needed_by,
     }
     ctx["idle"] = is_idle(ctx)
     # La simulazione di rimozione serve solo per i pacchetti inattivi (è lenta).
@@ -269,6 +292,129 @@ def package_context(name, exes, mapped, listening):
     else:
         ctx["removal_also_removes"] = None
     return ctx
+
+
+# ---------------------------------------------------------------- profilo del nodo
+
+
+def rpm_database():
+    """Tre letture del database rpm: chi fornisce cosa, chi possiede quale file, chi
+    richiede cosa. Le dipendenze si risolvono poi in memoria."""
+    provides, owners, requires = {}, {}, {}
+    for line in run(["rpm", "-qa", "--qf", "[%{NAME}|%{PROVIDENAME}\\n]"]).splitlines():
+        name, _, cap = line.partition("|")
+        if cap and cap != "(none)":
+            provides.setdefault(cap, set()).add(name)
+    for line in run(["rpm", "-qa", "--qf", "[%{NAME}|%{FILENAMES}\\n]"]).splitlines():
+        name, _, path = line.partition("|")
+        if path.startswith("/"):
+            owners.setdefault(path, set()).add(name)
+    for line in run(["rpm", "-qa", "--qf", "[%{NAME}|%{REQUIRENAME}\\n]"]).splitlines():
+        name, _, cap = line.partition("|")
+        if cap and cap != "(none)" and not cap.startswith("rpmlib("):
+            requires.setdefault(name, set()).add(cap)
+    installed = set(run(["rpm", "-qa", "--qf", "%{NAME}\\n"]).split())
+    return {"provides": provides, "owners": owners, "requires": requires, "installed": installed}
+
+
+def required_closure(seeds, db):
+    """Pacchetti richiesti dai semi, anche indirettamente: pacchetto -> origine."""
+    origin = dict(seeds)
+    queue = list(seeds)
+    while queue:
+        pkg = queue.pop()
+        for cap in sorted(db["requires"].get(pkg, ())):
+            found = db["provides"].get(cap) or (
+                db["owners"].get(cap) if cap.startswith("/") else None
+            )
+            for provider in sorted(found or ()):
+                if provider not in origin:
+                    origin[provider] = origin[pkg]
+                    queue.append(provider)
+    return origin
+
+
+def node_units():
+    """Unit attive o abilitate (servizi, socket, timer): quello che il nodo esegue."""
+    units = set()
+    listed = run(
+        [
+            "systemctl",
+            "list-units",
+            "--type=" + UNIT_TYPES,
+            "--state=active",
+            "--no-legend",
+            "--plain",
+        ]
+    )
+    for line in listed.splitlines():
+        if line.split():
+            units.add(line.split()[0])
+    enabled = run(
+        ["systemctl", "list-unit-files", "--type=" + UNIT_TYPES, "--state=enabled", "--no-legend"]
+    )
+    for line in enabled.splitlines():
+        name = line.split()[0] if line.split() else ""
+        if name and "@." not in name:
+            units.add(name)
+    return units
+
+
+def unit_paths(units):
+    """unit -> file della unit ed eseguibili di ExecStart."""
+    paths = {}
+    if not units:
+        return paths
+    names = sorted(units)
+    out = run(["systemctl", "show", "-p", "Id", "-p", "FragmentPath", "-p", "ExecStart"] + names)
+    current = None
+    for line in out.splitlines():
+        key, _, value = line.partition("=")
+        if key == "Id":
+            current = paths.setdefault(value, [])
+        elif current is None:
+            continue
+        elif key == "FragmentPath" and value:
+            current.append(value)
+        elif key == "ExecStart":
+            current += re.findall(r"path=(\S+)", value)
+    return paths
+
+
+def node_profile(extra, db):
+    """Servizi del nodo, pacchetti che servono a farli girare e voci aggiunte a mano.
+
+    `extra`: unit o pacchetti dichiarati in configurazione (servizi fuori da Kubernetes
+    che devono restare, anche se in quel momento non girano).
+    """
+    units = node_units()
+    missing = []
+    extra_packages = []
+    for item in extra:
+        if item in db["installed"]:
+            extra_packages.append(item)
+        elif "." in item:
+            units.add(item)
+        else:
+            missing.append(item)
+    seeds = {}
+    paths = unit_paths(units)
+    for unit, files in sorted(paths.items()):
+        for path in files:
+            for pkg in sorted(db["owners"].get(path, ())):
+                seeds.setdefault(pkg, unit)
+    # Unit aggiunte a mano ma inesistenti sul nodo: segnalate, non ignorate in silenzio.
+    missing += [u for u in sorted(units) if u in extra and not paths.get(u)]
+    for pkg in extra_packages:
+        seeds.setdefault(pkg, pkg + " (aggiunto)")
+    required = required_closure(seeds, db)
+    return {
+        "units": sorted(units),
+        "extra": sorted(extra),
+        "extra_missing": sorted(set(missing)),
+        "installed_packages": len(db["installed"]),
+        "required": dict(sorted(required.items())),
+    }
 
 
 # ---------------------------------------------------------------- kernel
@@ -339,11 +485,23 @@ def kernel_facts():
 # ---------------------------------------------------------------- main
 
 
-def main():
+def parse_args(argv):
+    """--extra a,b,c: servizi o pacchetti aggiuntivi del nodo."""
+    extra = []
+    for i, arg in enumerate(argv):
+        if arg == "--extra" and i + 1 < len(argv):
+            extra = [x.strip() for x in argv[i + 1].split(",") if x.strip()]
+    return extra
+
+
+def main(argv=None):
+    extra = parse_args(sys.argv[1:] if argv is None else argv)
     advisories = security_advisories()
     details = advisory_details()
-    exes, mapped = running_state()
+    exes, mapped, container_processes = running_state()
     listening = listening_exes(exes)
+    profile = node_profile(extra, rpm_database())
+    profile["container_processes"] = container_processes
 
     packages = {}
     for adv_id, adv in advisories.items():
@@ -361,7 +519,9 @@ def main():
             )
     for name, pkg in packages.items():
         pkg["advisories"].sort(key=lambda a: a["id"])
-        pkg["context"] = package_context(name, exes, mapped, listening)
+        pkg["context"] = package_context(
+            name, exes, mapped, listening, profile["required"].get(name)
+        )
 
     print(
         json.dumps(
@@ -375,6 +535,7 @@ def main():
                     "arch": platform.machine(),
                 },
                 "kernel": kernel_facts(),
+                "profile": profile,
                 "summary": {
                     "advisories": len(advisories),
                     "packages": len(packages),

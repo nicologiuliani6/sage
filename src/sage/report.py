@@ -91,6 +91,7 @@ def summary(
     messages: list[str],
     warnings: list[str],
     dry_run: bool,
+    reports: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         f"SAGE {__version__}" + (" (simulazione: nessuna modifica ai nodi)" if dry_run else "")
@@ -106,6 +107,7 @@ def summary(
         parts = ", ".join(f"{ACTION_LABEL.get(a, a)} {n}" for a, n in sorted(counts.items()))
         lines.append("")
         lines.append(f"== {node} [{group.name if group else 'senza gruppo'}]: {parts or 'niente'}")
+        lines += profile_lines((reports or {}).get(node, {}))
         for d in sorted(decisions, key=_sort_key):
             if d.action in ("update", "skip"):
                 continue
@@ -117,6 +119,32 @@ def summary(
         lines.append("")
         lines += [f"> {m}" for m in messages]
     return "\n".join(lines)
+
+
+def profile_lines(report: dict[str, Any]) -> list[str]:
+    """Cosa serve al nodo e cosa no, dal profilo del collector."""
+    profile = report.get("profile")
+    if not profile:
+        return []
+    packages = report.get("packages", {})
+    unneeded = sorted(n for n, p in packages.items() if not p["context"].get("needed_by"))
+    lines = [
+        f"   profilo: {len(profile.get('units', []))} servizi del nodo, "
+        f"{len(profile.get('required', {}))} pacchetti necessari su "
+        f"{profile.get('installed_packages', '?')} installati"
+    ]
+    if profile.get("container_processes"):
+        lines[0] += f"; {profile['container_processes']} processi dei container esclusi"
+    if profile.get("extra"):
+        lines.append("   aggiunti a mano: " + ", ".join(profile["extra"]))
+    if profile.get("extra_missing"):
+        lines.append("   ATTENZIONE, non trovati sul nodo: " + ", ".join(profile["extra_missing"]))
+    if unneeded:
+        shown = ", ".join(unneeded[:12]) + (
+            f" e altri {len(unneeded) - 12}" if len(unneeded) > 12 else ""
+        )
+        lines.append(f"   con advisory ma non necessari ai servizi ({len(unneeded)}): {shown}")
+    return lines
 
 
 def plan_text(plan: dict[str, Any]) -> str:

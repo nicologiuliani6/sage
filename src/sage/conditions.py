@@ -128,6 +128,8 @@ def verify(
             return Check("unknown", "contiene file setuid, setgid o con capability")
         if in_use(ctx):
             return Check("true", "codice del pacchetto in esecuzione o caricato")
+        if ctx.get("needed_by"):
+            return Check("true", f"serve a {ctx['needed_by']} (profilo del nodo)")
         if not idle_confirmed:
             return Check(
                 "unknown", f"inutilizzato, ma non da {idle_scans_required} scansioni consecutive"

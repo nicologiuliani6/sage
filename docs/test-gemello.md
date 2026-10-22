@@ -82,6 +82,13 @@ attuale. Da provare:
 - `dnf install -y cockpit` su un worker, senza avviarlo: dopo `idle_scans_required` giri dovrebbe
   comparire tra le rimozioni.
 
+### Servizi aggiuntivi dei nodi
+
+Il riepilogo di ogni giro mostra, per nodo, i servizi trovati, i pacchetti che servono a farli
+girare e quelli con advisory che non servono a nessun servizio. Se un nodo usa qualcosa fuori da
+Kubernetes che deve restare (agent di backup, NFS, strumenti di amministrazione), dichiaralo
+dall'installer: *Modifica il cluster: servizi aggiuntivi dei nodi* (ADR-0013).
+
 ## 4. Prima remediation vera, sul canary
 
 Rilancia l'installer e scegli **Passa al vivo** (chiede conferma), poi **Lancia un giro adesso**.
