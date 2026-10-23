@@ -32,6 +32,7 @@ import shlex
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -2658,6 +2659,31 @@ class Installer:
             input=json.dumps(manifest),
         )
 
+    def apply_ca_bundle(self) -> dict:
+        """Copia nel cluster le CA di questa macchina, per l'HTTPS dei pod di SAGE (KEV,
+        EPSS, OSV, LLM). Con un proxy che ispeziona TLS servono le CA aziendali, che
+        l'immagine di SAGE non conosce. Restituisce i valori `caBundle` del chart."""
+        bundle = system_ca_bundle()
+        if not bundle:
+            return {"configMap": ""}
+        try:
+            data = Path(bundle).read_text()
+        except (OSError, UnicodeDecodeError):
+            return {"configMap": ""}
+        if "BEGIN CERTIFICATE" not in data or len(data.encode()) > CA_BUNDLE_MAX:
+            self.ui.warn(f"CA di {bundle} non copiate nel cluster (vuote o troppo grandi)")
+            return {"configMap": ""}
+        name = f"{self.release}-ca"
+        self.apply_object(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": name, "namespace": self.ns, "labels": self.labels()},
+                "data": {"ca.crt": data},
+            }
+        )
+        return {"configMap": name}
+
     def labels(self) -> dict:
         return {
             "app.kubernetes.io/managed-by": MANAGED_BY,
@@ -2711,6 +2737,7 @@ class Installer:
         image = self.args.image or RELEASE.get("image")
         if image:
             values = {**values, "image": {**values.get("image", {}), **split_image(image)}}
+        values = {**values, "caBundle": self.apply_ca_bundle()}
         path = self.tmp / "values.json"
         path.write_text(json.dumps(values, indent=2))
         description = f"{who_text(self.kube_user)}: {action}"[:200]
@@ -3153,7 +3180,7 @@ class Installer:
         ns = self.kjson("get", "namespace", self.ns)
         ours = ns["metadata"].get("labels", {}).get("app.kubernetes.io/managed-by") == MANAGED_BY
         if reinstall:
-            for suffix in ("state", "report", "controller", "resume", "scan-now"):
+            for suffix in ("state", "report", "controller", "resume", "scan-now", "ca"):
                 self.kubectl(
                     "delete", "configmap", f"{self.release}-{suffix}", ns=True, check=False
                 )
@@ -3167,7 +3194,15 @@ class Installer:
         ):
             self.kubectl("delete", "namespace", self.ns, "--wait=false")
         else:
-            for suffix in ("state", "report", "controller", "llm-cache", "resume", "scan-now"):
+            for suffix in (
+                "state",
+                "report",
+                "controller",
+                "llm-cache",
+                "resume",
+                "scan-now",
+                "ca",
+            ):
                 self.kubectl(
                     "delete", "configmap", f"{self.release}-{suffix}", ns=True, check=False
                 )
@@ -3264,8 +3299,44 @@ def ignore_interrupts() -> None:
         pass
 
 
+# Certificati delle CA del sistema, nelle varie distro. L'eseguibile è compilato su Rocky e
+# cerca i certificati dove li mette RHEL: su Debian, Ubuntu e SUSE stanno altrove.
+SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",  # Debian, Ubuntu
+    "/etc/pki/tls/certs/ca-bundle.crt",  # RHEL, Rocky, Fedora
+    "/etc/ssl/ca-bundle.pem",  # SUSE
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+)
+# Oltre questa dimensione le CA non entrano in una ConfigMap (limite 1 MiB, con margine).
+CA_BUNDLE_MAX = 900_000
+
+
+def system_ca_bundle() -> str | None:
+    """Il file delle CA che il sistema usa davvero (SSL_CERT_FILE se impostato)."""
+    configured = os.environ.get("SSL_CERT_FILE")
+    if configured and os.path.isfile(configured):
+        return configured
+    default = ssl.get_default_verify_paths().cafile
+    for path in (*SYSTEM_CA_BUNDLES, default):
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def use_system_ca() -> None:
+    """HTTPS dell'installer con le CA del sistema, comprese quelle aziendali (proxy che
+    ispezionano TLS). Python le legge da SSL_CERT_FILE."""
+    if os.environ.get("SSL_CERT_FILE"):
+        return
+    bundle = system_ca_bundle()
+    if bundle:
+        os.environ["SSL_CERT_FILE"] = bundle
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
+    use_system_ca()
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     term_ok = os.environ.get("TERM", "dumb") != "dumb"
     color = interactive and term_ok and "NO_COLOR" not in os.environ

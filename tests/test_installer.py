@@ -1228,6 +1228,42 @@ class Command(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class SystemCa(unittest.TestCase):
+    """CA del sistema per l'installer e per i pod (proxy che ispezionano TLS)."""
+
+    def test_ssl_cert_file_wins(self):
+        with (
+            tempfile.NamedTemporaryFile() as f,
+            mock.patch.dict(os.environ, {"SSL_CERT_FILE": f.name}),
+        ):
+            self.assertEqual(inst.system_ca_bundle(), f.name)
+
+    def test_debian_path_used_when_rhel_missing(self):
+        env = {k: v for k, v in os.environ.items() if k != "SSL_CERT_FILE"}
+        debian = "/etc/ssl/certs/ca-certificates.crt"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(inst.os.path, "isfile", lambda p: p == debian),
+        ):
+            inst.use_system_ca()
+            self.assertEqual(os.environ["SSL_CERT_FILE"], debian)
+
+    def test_bundle_copied_to_cluster(self):
+        installer = inst.Installer(inst.parse_args(["--no-tui"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        bundle = installer.tmp / "ca.crt"
+        bundle.write_text("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n")
+        applied = []
+        with (
+            mock.patch.object(inst, "system_ca_bundle", lambda: str(bundle)),
+            mock.patch.object(installer, "apply_object", applied.append),
+        ):
+            self.assertEqual(installer.apply_ca_bundle(), {"configMap": "sage-ca"})
+        self.assertIn("BEGIN CERTIFICATE", applied[0]["data"]["ca.crt"])
+        with mock.patch.object(inst, "system_ca_bundle", lambda: None):
+            self.assertEqual(installer.apply_ca_bundle(), {"configMap": ""})
+
+
 class ClusterLlmCheck(unittest.TestCase):
     """Un endpoint .svc non risponde dal master: si prova da un pod nel cluster."""
 
