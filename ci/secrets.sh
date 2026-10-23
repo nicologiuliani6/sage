@@ -7,6 +7,3 @@ curl -fsSL -o "$TOOLS/$f" \
 echo "${GITLEAKS_SHA256}  $TOOLS/$f" | sha256sum -c -
 tar xzf "$TOOLS/$f" -C "$TOOLS" gitleaks
 "$TOOLS/gitleaks" git --redact -v .
-
-# TEMPORANEO: immagini cloud Debian.
-bash ci/discover.sh || true
