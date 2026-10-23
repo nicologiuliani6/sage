@@ -45,6 +45,7 @@ class Cluster:
         self.jobs = {}  # nome -> JobInfo
         self.created = []
         self.flags = set()
+        self.problems = []  # controlli di /readyz che non passano
 
     def list_nodes(self):
         return self.nodes
@@ -73,6 +74,9 @@ class Cluster:
         job = self.jobs[name]
         self.jobs[name] = JobInfo(name, job.node, False, ok, not ok, at)
 
+    def api_problems(self):
+        return list(self.problems)
+
     def pop_flag(self, name):
         if name in self.flags:
             self.flags.discard(name)
@@ -83,8 +87,8 @@ class Cluster:
         self.write_json("sage-report", {"generated_at": at.isoformat(), "plans": plans})
 
 
-def make(cluster, dry_run=False, pause=30):
-    cfg = base_config(controller={"pause_minutes": pause})
+def make(cluster, dry_run=False, pause=30, stable=0):
+    cfg = base_config(controller={"pause_minutes": pause, "control_plane_stable_seconds": stable})
     chain = LlmChain(cfg.llm, env={}, get_status=lambda *a: 200)
     return Controller(cfg, cluster, "sage", dry_run, chain)
 
@@ -296,6 +300,37 @@ def test_steps_pass_idle_nodes_together():
     ]
     cluster.finish(last_fix(cluster))
     assert "giro completato" in ctl.steps(T0)[-1]
+
+
+def test_unstable_control_plane_delays_the_node():
+    """Con etcd o l'API in difficoltà il nodo resta in coda, nessun drain."""
+    cluster = Cluster([node("w1"), node("m1", master=True)])
+    ctl = make(cluster, stable=60)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "m1": PLAN})
+    cluster.problems = ["etcd"]
+    assert "control plane instabile: etcd" in ctl.step(T0)
+    assert remediated(cluster) == []
+    cluster.problems = []
+    t = T0 + timedelta(seconds=30)
+    assert "sano da 0 s su 60" in ctl.step(t)
+    assert "sano da 30 s su 60" in ctl.step(t + timedelta(seconds=30))
+    assert "avviata su w1" in ctl.step(t + timedelta(seconds=60))
+    cluster.finish(last_fix(cluster))
+    t2 = t + timedelta(seconds=70)
+    msgs = ctl.steps(t2)
+    # per un master servono 3 volte tanto: sano da 70 s, ne servono 180
+    assert msgs == ["w1: remediation riuscita", "m1: in attesa, control plane sano da 70 s su 180"]
+    assert "avviata su m1" in ctl.step(t + timedelta(seconds=180))
+
+
+def test_simulation_does_not_wait():
+    cluster = Cluster([node("w1")])
+    cluster.problems = ["etcd"]
+    ctl = make(cluster, dry_run=True, stable=60)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN})
+    assert ctl.step(T0).startswith("w1: simulato")
 
 
 def test_queue_order_canary_first():

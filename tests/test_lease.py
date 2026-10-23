@@ -56,3 +56,34 @@ def test_release_does_not_touch_someone_elses_lease():
     k.release_lease("sage-controller", "vecchio")
     assert api.lease.spec.lease_duration_seconds == 120
     k.release_lease("assente", "vecchio")  # niente errori se il Lease non c'è
+
+
+class FakeApiClient:
+    def __init__(self, body, status=200, error=None):
+        self.body, self.status, self.error = body, status, error
+
+    def __call__(self):
+        return self
+
+    def call_api(self, path, method, **kw):
+        if self.error:
+            raise self.error
+        assert path == "/readyz" and ("verbose", "true") in kw["query_params"]
+        return self.body, self.status, {}
+
+
+def test_api_problems_reads_readyz():
+    k = Kube.__new__(Kube)
+    healthy = "[+]ping ok\n[+]etcd ok\n[+]etcd-readiness ok\nreadyz check passed\n"
+    k._client = type("C", (), {"ApiClient": FakeApiClient(healthy)})
+    assert k.api_problems() == []
+    sick = "[+]ping ok\n[-]etcd failed: reason withheld\n[-]etcd-readiness failed\n"
+    k._client = type("C", (), {"ApiClient": FakeApiClient(sick, 500)})
+    assert k.api_problems() == ["etcd", "etcd-readiness"]
+    # come il client vero: un 500 diventa un'eccezione con il corpo
+    error = ApiException(status=500)
+    error.body = sick.encode()
+    k._client = type("C", (), {"ApiClient": FakeApiClient("", error=error)})
+    assert k.api_problems() == ["etcd", "etcd-readiness"]
+    k._client = type("C", (), {"ApiClient": FakeApiClient("", error=TimeoutError())})
+    assert k.api_problems() == ["API non raggiungibile (TimeoutError)"]

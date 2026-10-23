@@ -51,6 +51,7 @@ class KubeApi(Protocol):
     def release_lease(self, name: str, holder: str) -> None: ...
     def read_lease(self, name: str) -> dict[str, Any] | None: ...
     def read_deployment(self, name: str) -> dict[str, Any] | None: ...
+    def api_problems(self) -> list[str]: ...
 
 
 def encode(data: dict[str, Any]) -> str:
@@ -183,6 +184,32 @@ class Kube:
         except ApiException as exc:
             if exc.status != 409:
                 raise
+
+    def api_problems(self) -> list[str]:
+        """Controlli di /readyz dell'apiserver che non passano (etcd compreso); [] se è
+        sano. /readyz è leggibile da tutti (ClusterRole system:public-info-viewer)."""
+        try:
+            data, status, _ = self._client.ApiClient().call_api(
+                "/readyz",
+                "GET",
+                query_params=[("verbose", "true")],
+                auth_settings=["BearerToken"],
+                response_type="str",
+                _request_timeout=10,
+            )
+        except Exception as exc:  # noqa: BLE001 (connessione, timeout, 5xx)
+            # Con un controllo fallito l'apiserver risponde 500: il client solleva
+            # un'eccezione che ha comunque il corpo con l'elenco dei controlli.
+            body, status = getattr(exc, "body", None), getattr(exc, "status", None)
+            if not body:
+                return [f"API non raggiungibile ({type(exc).__name__})"]
+            data = body.decode() if isinstance(body, bytes) else body
+        failed = [
+            line[3:].split(" ", 1)[0] for line in str(data).splitlines() if line.startswith("[-]")
+        ]
+        if status != 200 and not failed:
+            failed = [f"readyz HTTP {status}"]
+        return failed
 
     def _lease_api(self):
         return self._client.CoordinationV1Api()

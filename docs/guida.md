@@ -124,6 +124,11 @@ fa ripartire appena i nodi sono su. Il controllore riprende il giro dal punto sa
 storage condiviso (Ceph, SAN) troppi controlli insieme rallentano etcd. Un nodo che non
 risponde in tempo viene riprovato da solo; se manca ancora, salta quel giro.
 
+**Control plane instabile**: prima di ogni nodo SAGE controlla che l'API e etcd siano sani
+da almeno un minuto (tre per un master). Se non lo sono, aspetta e la dashboard mostra "in
+attesa: control plane instabile". Se l'attesa non finisce mai, il problema è del cluster
+(es. etcd su dischi lenti: fsync del WAL oltre i 10 ms), non di SAGE.
+
 **Riavvio in sospeso**: se un nodo ha aggiornamenti già installati che richiedono un
 riavvio (installati a mano o da unattended-upgrades o dnf-automatic), SAGE lo mette nel
 giro e lo riavvia con drain, come dopo un suo aggiornamento. Nei gruppi con il kernel solo

@@ -295,6 +295,13 @@ class Controller:
             return self._skip(cycle, name, OUTCOME_NOTHING, now)
         if not node.ready or node.unschedulable:
             return self._skip(cycle, name, "saltato: nodo non Ready o in cordon", now)
+        if not self.dry_run:
+            waiting = self._control_plane_unstable(doc, nodes.values(), node.control_plane, now)
+            if waiting:
+                # Il nodo resta in coda: si riprova al passo successivo.
+                doc["waiting"] = waiting
+                return f"{name}: in attesa, {waiting}"
+        doc.pop("waiting", None)
         st = doc["nodes"].setdefault(name, {})
         if same_plan(plan_dict, st.get("last_plan")) and st.get("last_success"):
             # Dopo una remediation riuscita il controllo vede ancora le stesse advisory:
@@ -320,7 +327,28 @@ class Controller:
         self.kube.create_job(manifest)
         return f"remediation avviata su {name} ({st['job']})"
 
+    def _control_plane_unstable(
+        self, doc: dict[str, Any], nodes: Any, master: bool, now: datetime
+    ) -> str | None:
+        """Perché non è il momento di intervenire, o None se il control plane è stabile:
+        /readyz sano (etcd compreso) e master tutti Ready, di fila da abbastanza tempo."""
+        problems = self.kube.api_problems()
+        problems += [f"master {n.name} non Ready" for n in nodes if n.control_plane and not n.ready]
+        if problems:
+            doc["stable_since"] = None
+            return "control plane instabile: " + ", ".join(problems[:3])
+        since = _time(doc.get("stable_since"))
+        if since is None:
+            doc["stable_since"] = _iso(now)
+            since = now
+        needed = self.cfg.controller.control_plane_stable_seconds * (3 if master else 1)
+        stable = (now - since).total_seconds()
+        if stable < needed:
+            return f"control plane sano da {int(stable)} s su {needed}"
+        return None
+
     def _pause(self, doc: dict[str, Any], now: datetime, why: str) -> str:
+        doc.pop("waiting", None)
         cycle = doc["cycle"]
         cycle["phase"] = "pause"
         cycle["finished"] = _iso(now)

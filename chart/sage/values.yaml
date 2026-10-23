@@ -33,6 +33,7 @@ config:
     pause_minutes: 30       # pausa tra un giro e il successivo (0 = subito)
     poll_seconds: 30
     scan_parallel: 3        # nodi controllati insieme (pochi con storage condiviso)
+    control_plane_stable_seconds: 60  # API sana da tanto prima di un nodo (x3 per un master)
   log_level: info           # info (fasi e avanzamento) o debug
   extra_services: {}        # nodo -> servizi o pacchetti fuori da Kubernetes da tenere
   ssh:
