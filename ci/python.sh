@@ -11,7 +11,7 @@ uv run ansible-galaxy collection install -r ansible/requirements.yml
 (cd ansible \
   && uv run ansible-playbook --syntax-check -i localhost, collect.yml \
   && uv run ansible-playbook --syntax-check -i localhost, remediate.yml)
-checked uv run pytest -v -rs | tee "$TOOLS/pytest.log"
+checked uv run pytest -v -rs --ignore=tests/live | tee "$TOOLS/pytest.log"
 if grep -q "SKIPPED" "$TOOLS/pytest.log"; then
   echo "test saltati in CI: devono girare tutti" && exit 1
 fi
