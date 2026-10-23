@@ -1474,6 +1474,8 @@ SCAN_START_WAIT = 600
 RESUME_POLL = 10
 # Riconnessioni al log di un Job prima di lasciar perdere.
 LOG_RECONNECTS = 20
+# Controlli (ogni 2 s) che il pod sia ancora attivo prima di ricollegarsi al log.
+LOG_END_CHECKS = 8
 # Errori di rete verso l'API di Kubernetes che conviene ritentare (bilanciatore che chiude
 # le connessioni, apiserver lento): il comando non è arrivato o la risposta si è persa.
 TRANSIENT_API_ERRORS = (
@@ -2975,35 +2977,42 @@ class Installer:
         return 0
 
     def job_active(self, job: str) -> bool | None:
-        """Il Job sta ancora lavorando? None se non si riesce a saperlo."""
-        proc = self.kubectl("get", "job", job, "-o", "json", ns=True, check=False)
+        """Il pod del Job sta ancora lavorando? None se non si riesce a saperlo.
+
+        Si guarda il pod, non lo stato del Job: quello si aggiorna qualche secondo dopo la
+        fine del pod, e nel frattempo il Job sembra ancora attivo."""
+        proc = self.kubectl(
+            "get", "pods", "-l", f"job-name={job}", "-o", "json", ns=True, check=False
+        )
         if proc.returncode != 0:
-            return None if "NotFound" not in proc.stderr else False
-        status = json.loads(proc.stdout).get("status", {})
-        return not (status.get("succeeded") or status.get("failed"))
+            return None
+        pods = json.loads(proc.stdout).get("items", [])
+        if not pods:
+            return False  # pod già tolto (Job finito e ripulito) o mai partito
+        return any(p.get("status", {}).get("phase") in ("Pending", "Running") for p in pods)
 
     def follow_logs(self, job: str) -> None:
         """`kubectl logs -f`, che si ricollega se la connessione cade (bilanciatori con
-        timeout corti, API sotto carico) finché il Job lavora."""
+        timeout corti, API sotto carico) finché il pod del Job lavora."""
         cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
         cmd += ["-n", self.ns, "logs", "-f", f"job/{job}"]
         since = None
         for _ in range(LOG_RECONNECTS):
-            started = time.time()
             subprocess.run(cmd + ([f"--since={since}s"] if since else []), check=False)
+            ended = time.time()
+            # Il log finisce un attimo prima che il pod risulti terminato: si aspetta un
+            # po' prima di decidere che la connessione è caduta.
             active = None
-            for _ in range(10):  # l'API può non rispondere per qualche secondo
+            for _ in range(LOG_END_CHECKS):
                 active = self.job_active(job)
-                if active is not None:
-                    break
-                time.sleep(3)
-            if active is False:
-                return
+                if active is False:
+                    return
+                time.sleep(2)
+            if active is None:
+                return  # l'API non risponde: si smette di seguire, il lavoro continua
             print("\n(connessione al log interrotta: mi ricollego)\n")
-            time.sleep(2)
-            # Le righe scritte durante l'interruzione: qualcuna può ripetersi, nessuna manca.
-            since = int(time.time() - started) if since is None else since
-            since = min(since, 600) + 5
+            # Solo le righe scritte durante l'interruzione (con un piccolo margine).
+            since = int(time.time() - ended) + 3
 
     def wait_pod(self, job: str, timeout: int = 600) -> bool:
         """Aspetta che il pod del Job sia partito (o finito). False se non parte."""
