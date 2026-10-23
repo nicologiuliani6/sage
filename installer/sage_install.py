@@ -1259,6 +1259,26 @@ class ScreenUI(LineUI):
 # ------------------------------------------------------------------ comandi esterni
 
 
+def transient_api_error(proc: subprocess.CompletedProcess) -> bool:
+    text = (proc.stderr or "") + (proc.stdout or "")[-500:]
+    return proc.returncode != 0 and any(e in text for e in TRANSIENT_API_ERRORS)
+
+
+def retry_api(call, check=True, sleep=time.sleep) -> subprocess.CompletedProcess:
+    """Ripete un comando kubectl o helm se fallisce per un errore di rete verso l'API
+    (attese di 2, 4, 8 e 16 secondi). Gli altri errori passano subito."""
+    proc = call()
+    for attempt in range(API_RETRIES):
+        if not transient_api_error(proc):
+            break
+        sleep(2 ** (attempt + 1))
+        proc = call()
+    if check and proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise Fail(f"{' '.join(proc.args[:3])} fallito: {detail}")
+    return proc
+
+
 def run(args, input=None, check=True, timeout=None) -> subprocess.CompletedProcess:
     try:
         # Senza input, stdin chiuso: ssh e kubectl non devono leggere dal terminale.
@@ -1449,9 +1469,22 @@ def progress_lines(doc: dict | None) -> tuple[list[str], str | None]:
 
 
 # Il controllore guarda le richieste ogni 30 secondi (controller.poll_seconds).
-SCAN_START_WAIT = 90
+SCAN_START_WAIT = 600
 # Ogni quanto --resume rilegge lo stato quando non c'è un log da seguire.
 RESUME_POLL = 10
+# Riconnessioni al log di un Job prima di lasciar perdere.
+LOG_RECONNECTS = 20
+# Errori di rete verso l'API di Kubernetes che conviene ritentare (bilanciatore che chiude
+# le connessioni, apiserver lento): il comando non è arrivato o la risposta si è persa.
+TRANSIENT_API_ERRORS = (
+    "Unable to connect to the server",
+    "connection refused",
+    "TLS handshake timeout",
+    "i/o timeout",
+    "unexpected EOF",
+    "http2: client connection lost",
+)
+API_RETRIES = 4
 # Dove l'eseguibile si installa come comando di sistema.
 DEFAULT_BIN = "/usr/local/bin/sage"
 
@@ -1615,7 +1648,9 @@ class Installer:
             cmd += ["--context", self.args.context]
         if ns:
             cmd += ["-n", self.ns]
-        return run(cmd + list(args), input=input, check=check, timeout=120)
+        return retry_api(
+            lambda: run(cmd + list(args), input=input, check=False, timeout=120), check
+        )
 
     def kjson(self, *args, ns=False):
         return json.loads(self.kubectl(*args, "-o", "json", ns=ns).stdout)
@@ -1624,7 +1659,7 @@ class Installer:
         cmd = [self.helm_bin] + list(args) + ["-n", self.ns]
         if self.args.context:
             cmd += ["--kube-context", self.args.context]
-        return run(cmd, check=check, timeout=600)
+        return retry_api(lambda: run(cmd, check=False, timeout=600), check)
 
     def ssh(self, ip, command, user, key=None, known_hosts=None, input=None):
         cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(self.port)]
@@ -2161,8 +2196,8 @@ class Installer:
             lines.append(f"  Ondata {g.order}  {g.name}: {names}  ({g.kernel_text()}{tail})")
         lines.append("")
         lines.append(
-            "* = canary: si aggiorna per primo, poi qualche ora di osservazione prima degli "
-            "altri nodi del gruppo."
+            "* = canary: il primo nodo del gruppo ad aggiornarsi. I gruppi con i master "
+            "vanno sempre per ultimi."
         )
         if suffix:
             lines.append(f"Nomi senza il suffisso comune {suffix}.")
@@ -2177,7 +2212,7 @@ class Installer:
                 [
                     "Sì, continua",
                     "Sposta i nodi tra i gruppi",
-                    "Modifica un gruppo (ordine, canary, kernel, parallelismo...)",
+                    "Modifica un gruppo (ordine, canary, kernel...)",
                     "Crea un gruppo nuovo",
                 ],
                 help=self.groups_text(groups, assignment, new),
@@ -2433,6 +2468,15 @@ class Installer:
                 problem, models = self.cluster_llm_models(base_url, key or None)
                 if problem is None:
                     ui.ok(f"{base_url} risponde dal cluster")
+            if problem == "risposta HTTP 404" and not base_url.endswith("/v1"):
+                # Errore tipico con Ollama e vLLM: l'API compatibile OpenAI sta sotto /v1.
+                alt = base_url + "/v1"
+                alt_problem, alt_models = llm_models(alt, key or None)
+                if alt_problem and alt_problem.startswith("non raggiungibile"):
+                    alt_problem, alt_models = self.cluster_llm_models(alt, key or None)
+                if alt_problem is None:
+                    ui.ok(f"{base_url} risponde 404, {alt} sì: uso {alt}")
+                    base_url, problem, models = alt, None, alt_models
             if problem is None:
                 break
             ui.warn(f"{base_url}: {problem}")
@@ -2908,7 +2952,6 @@ class Installer:
         Con --once mostra lo stato e il lavoro attuale una volta sola.
         """
         self.ui.close()
-        cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
         shown, followed = None, set()
         try:
             while True:
@@ -2921,9 +2964,7 @@ class Installer:
                     followed.add(job)
                     if self.wait_pod(job):
                         print(f"\nLog di {job} (Ctrl+C per uscire, il lavoro continua):\n")
-                        subprocess.run(
-                            cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False
-                        )
+                        self.follow_logs(job)
                     continue
                 if self.args.once:
                     return 0
@@ -2932,6 +2973,37 @@ class Installer:
             ignore_interrupts()
             print("\nUscito: il lavoro di SAGE nel cluster continua.")
         return 0
+
+    def job_active(self, job: str) -> bool | None:
+        """Il Job sta ancora lavorando? None se non si riesce a saperlo."""
+        proc = self.kubectl("get", "job", job, "-o", "json", ns=True, check=False)
+        if proc.returncode != 0:
+            return None if "NotFound" not in proc.stderr else False
+        status = json.loads(proc.stdout).get("status", {})
+        return not (status.get("succeeded") or status.get("failed"))
+
+    def follow_logs(self, job: str) -> None:
+        """`kubectl logs -f`, che si ricollega se la connessione cade (bilanciatori con
+        timeout corti, API sotto carico) finché il Job lavora."""
+        cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
+        cmd += ["-n", self.ns, "logs", "-f", f"job/{job}"]
+        since = None
+        for _ in range(LOG_RECONNECTS):
+            started = time.time()
+            subprocess.run(cmd + ([f"--since={since}s"] if since else []), check=False)
+            active = None
+            for _ in range(10):  # l'API può non rispondere per qualche secondo
+                active = self.job_active(job)
+                if active is not None:
+                    break
+                time.sleep(3)
+            if active is False:
+                return
+            print("\n(connessione al log interrotta: mi ricollego)\n")
+            time.sleep(2)
+            # Le righe scritte durante l'interruzione: qualcuna può ripetersi, nessuna manca.
+            since = int(time.time() - started) if since is None else since
+            since = min(since, 600) + 5
 
     def wait_pod(self, job: str, timeout: int = 600) -> bool:
         """Aspetta che il pod del Job sia partito (o finito). False se non parte."""
@@ -3006,12 +3078,11 @@ class Installer:
                 return self.resume_view()
             job = self.wait_scan_job(since, SCAN_START_WAIT, "Chiesto un giro al controllore")
             if not job:
+                # Su un cluster nuovo il pod può metterci molto (download dell'immagine):
+                # invece di uscire si segue il giro, che il controllore avvierà.
                 ui.close()
-                print(
-                    "\nIl controllore non ha ancora avviato il controllo: lo farà al prossimo "
-                    f"passo. Per seguirlo: {self.command_name()} --resume\n"
-                )
-                return 0
+                print("\nIl controllo non è ancora partito: seguo il giro.\n")
+                return self.resume_view()
         return self.follow_job(job)
 
     def create_scan_job(self) -> str:
@@ -3074,9 +3145,8 @@ class Installer:
         # Il log va nel terminale normale, dove resta leggibile.
         ui.close()
         print(f"\nLog del controllo (job {job}; Ctrl+C esce, il controllo continua):\n")
-        cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
         try:
-            subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
+            self.follow_logs(job)
         except KeyboardInterrupt:
             ignore_interrupts()
             # Si smette solo di leggere il log: il Job gira nel cluster, indipendente da qui.

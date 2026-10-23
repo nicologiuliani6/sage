@@ -154,6 +154,7 @@ function planText(plan) {
   if (plan.advisories) parts.push(`${plan.advisories} advisory (${plan.packages} pacchetti)`);
   if (plan.remove.length) parts.push("rimuovere " + plan.remove.join(", "));
   if (plan.mitigate.length) parts.push("bloccare " + plan.mitigate.join(", "));
+  if (plan.reboot) parts.push("riavvio in sospeso");
   return parts.join("; ") || "niente da fare";
 }
 

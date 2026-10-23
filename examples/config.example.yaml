@@ -11,6 +11,7 @@ timezone: Europe/Rome                    # fuso degli orari nel report e nei log
 controller:
   pause_minutes: 30                      # pausa tra un giro e il successivo (0 = subito)
   poll_seconds: 30                       # ogni quanto guarda lo stato dei Job
+  scan_parallel: 3                       # nodi controllati insieme (pochi con storage condiviso)
 
 # Dettaglio del log: info (fasi, avanzamento, una riga per chiamata LLM) o debug.
 log_level: info

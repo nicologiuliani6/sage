@@ -725,6 +725,33 @@ class Apt:
         return parse_apt_remove_simulation(out, name)
 
 
+def newest_kernel_differs(release, boot="/boot"):
+    """C'è in /boot un kernel installato dopo quello in esecuzione? (aggiornato ma non
+    ancora attivo). Si confrontano le date dei file: le versioni hanno formati diversi
+    per ogni distro."""
+    images = [i for i in glob.glob(boot + "/vmlinuz-*") if "rescue" not in i]
+    if not images:
+        return False
+    newest = max(images, key=os.path.getmtime)
+    return os.path.basename(newest) != "vmlinuz-" + release
+
+
+def reboot_status(pm, release):
+    """Riavvio in sospeso: aggiornamenti installati che diventano attivi solo riavviando
+    (kernel, libc, systemd...). Lo dicono gli strumenti della distro e /boot."""
+    reasons = []
+    if os.path.exists("/var/run/reboot-required"):
+        pkgs = read_file("/var/run/reboot-required.pkgs").split()
+        reasons.append("reboot-required" + (": " + ", ".join(sorted(set(pkgs))) if pkgs else ""))
+    if pm.name == "dnf" and "Reboot is required" in run(["dnf", "needs-restarting", "-r"]):
+        reasons.append("dnf needs-restarting")
+    if pm.name == "zypper" and "Reboot is required" in run(["zypper", "needs-rebooting"]):
+        reasons.append("zypper needs-rebooting")
+    if newest_kernel_differs(release):
+        reasons.append("kernel installato più recente di quello in esecuzione")
+    return {"required": bool(reasons), "reasons": reasons}
+
+
 def package_manager():
     """Il gestore di pacchetti del nodo, o None se non è tra quelli supportati."""
     if shutil.which("dnf"):
@@ -933,7 +960,28 @@ def parse_args(argv):
     return extra
 
 
+def low_priority():
+    """Il collector (e i comandi che lancia: apt, dnf, rpm, dpkg) gira con la priorità
+    più bassa di CPU e disco, per non rallentare i servizi del nodo (es. etcd sui master).
+    ionice si applica rilanciandosi una volta; se manca, resta il solo nice."""
+    if os.environ.get("SAGE_LOW_PRIORITY") == "1":
+        return
+    os.environ["SAGE_LOW_PRIORITY"] = "1"
+    try:
+        os.nice(19)
+    except OSError:
+        pass
+    ionice = shutil.which("ionice")
+    if ionice:
+        try:
+            os.execv(ionice, [ionice, "-t", "-c", "3", sys.executable] + sys.argv)
+        except OSError:
+            pass
+
+
 def main(argv=None):
+    if argv is None:
+        low_priority()
     extra = parse_args(sys.argv[1:] if argv is None else argv)
     pm = package_manager()
     if pm is None:
@@ -978,6 +1026,7 @@ def main(argv=None):
                     "arch": platform.machine(),
                 },
                 "kernel": kernel_facts(),
+                "reboot": reboot_status(pm, platform.release()),
                 "profile": profile,
                 "summary": {
                     "advisories": len(advisory_ids),

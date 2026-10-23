@@ -1228,6 +1228,60 @@ class Command(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class ApiRetries(unittest.TestCase):
+    """Errori di rete verso l'API (bilanciatore, apiserver sotto carico): si ritenta."""
+
+    def proc(self, rc, err=""):
+        return subprocess.CompletedProcess(["kubectl", "get", "x"], rc, "", err)
+
+    def test_transient_error_retried(self):
+        results = iter([self.proc(1, "Unable to connect to the server: EOF"), self.proc(0)])
+        slept = []
+        out = inst.retry_api(lambda: next(results), sleep=slept.append)
+        self.assertEqual(out.returncode, 0)
+        self.assertEqual(slept, [2])
+
+    def test_other_errors_not_retried(self):
+        calls = []
+
+        def call():
+            calls.append(1)
+            return self.proc(1, 'Error from server (NotFound): jobs "x" not found')
+
+        with self.assertRaises(inst.Fail):
+            inst.retry_api(call, sleep=lambda s: None)
+        self.assertEqual(len(calls), 1)
+
+    def test_gives_up_after_retries(self):
+        calls = []
+
+        def call():
+            calls.append(1)
+            return self.proc(1, "Unable to connect to the server: EOF")
+
+        out = inst.retry_api(call, check=False, sleep=lambda s: None)
+        self.assertEqual(out.returncode, 1)
+        self.assertEqual(len(calls), inst.API_RETRIES + 1)
+
+
+class LogReconnect(unittest.TestCase):
+    def test_log_reconnects_while_job_runs(self):
+        installer = inst.Installer(inst.parse_args(["--no-tui"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        runs = []
+        states = iter([True, False])  # dopo la prima interruzione il Job lavora ancora
+        with (
+            mock.patch.object(inst.subprocess, "run", lambda cmd, **k: runs.append(cmd)),
+            mock.patch.object(installer, "job_active", lambda job: next(states)),
+            mock.patch.object(inst.time, "sleep", lambda s: None),
+            mock.patch("builtins.print"),
+        ):
+            installer.follow_logs("sage-scan-1")
+        self.assertEqual(len(runs), 2)
+        self.assertNotIn("--since", " ".join(runs[0]))
+        self.assertTrue(runs[1][-1].startswith("--since="))
+
+
 class SystemCa(unittest.TestCase):
     """CA del sistema per l'installer e per i pod (proxy che ispezionano TLS)."""
 
@@ -1345,6 +1399,7 @@ class ResumeFollow(unittest.TestCase):
         with (
             mock.patch.object(installer, "read_json_cm", side_effect=read),
             mock.patch.object(installer, "wait_pod", return_value=True),
+            mock.patch.object(installer, "job_active", return_value=False),
             mock.patch.object(inst.subprocess, "run", lambda cmd, **k: followed.append(cmd[-1])),
             mock.patch.object(inst.time, "sleep", lambda s: None),
             mock.patch("builtins.print"),

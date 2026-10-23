@@ -304,6 +304,14 @@ def test_queue_order_canary_first():
     assert controller.queue_order(cfg, groups) == ["w1", "w2", "w3", "m1"]
 
 
+def test_masters_always_last_whatever_the_order():
+    cfg = base_config()
+    master, worker = cfg.group("master"), cfg.group("worker")
+    groups = {"m1": master, "w1": worker, "w2": worker}
+    cfg = cfg.__class__(**{**cfg.__dict__, "groups": (master, worker)})  # master con order 1
+    assert controller.queue_order(cfg, groups, frozenset({"m1"})) == ["w1", "w2", "m1"]
+
+
 def test_scan_manifest():
     m = controller.scan_manifest(JOB, "sage", T0)
     assert m["metadata"]["name"] == "sage-scan-261022120000"

@@ -111,6 +111,24 @@ ssh -L 8080:localhost:8080 <utente>@<master>
 sage --dashboard          # sul master; poi http://localhost:8080 sul tuo computer
 ```
 
+**Aggiornare o riconfigurare durante un giro** è sicuro. Il controllore che si riavvia
+riprende dallo stato salvato, senza ricominciare il giro. I Job già partiti (controllo o
+remediation) finiscono da soli, e i cambi di gruppi e configurazione valgono dal nodo
+successivo.
+
+**All'accensione** non serve fare niente: SAGE è un Deployment del cluster, e Kubernetes lo
+fa ripartire appena i nodi sono su. Il controllore riprende il giro dal punto salvato.
+
+**Nodi lenti**: il controllo legge dischi e pacchetti con la priorità più bassa (`nice`,
+`ionice`) e su pochi nodi alla volta (`controller.scan_parallel`, 3 di default). Con VM su
+storage condiviso (Ceph, SAN) troppi controlli insieme rallentano etcd. Un nodo che non
+risponde in tempo viene riprovato da solo; se manca ancora, salta quel giro.
+
+**Riavvio in sospeso**: se un nodo ha aggiornamenti già installati che richiedono un
+riavvio (installati a mano o da unattended-upgrades o dnf-automatic), SAGE lo mette nel
+giro e lo riavvia con drain, come dopo un suo aggiornamento. Nei gruppi con il kernel solo
+a mano il riavvio resta a una persona.
+
 Ogni modifica fatta con `sage` finisce nello **storico** (ConfigMap `sage-history`): chi, da
 quale macchina, con quale utente Kubernetes, quando, cosa è cambiato e perché
 ([ADR-0012](adr/0012-storico-delle-modifiche.md)).
