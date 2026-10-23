@@ -41,7 +41,14 @@ def extra_vars(node_name: str, control_plane: bool, plan: dict[str, Any], group)
     }
 
 
-def run(cfg: Config, kube: KubeApi, node_name: str, plan: dict[str, Any], workdir: Path) -> int:
+def run(
+    cfg: Config,
+    kube: KubeApi,
+    node_name: str,
+    plan: dict[str, Any],
+    workdir: Path,
+    config_path: str | None = None,
+) -> int:
     nodes = kube.list_nodes()
     node = next((n for n in nodes if n.name == node_name), None)
     if node is None:
@@ -56,7 +63,10 @@ def run(cfg: Config, kube: KubeApi, node_name: str, plan: dict[str, Any], workdi
     for w in warnings:
         log.warning(w)
     vars_path = workdir / "remediate-vars.json"
-    vars_path.write_text(json.dumps(extra_vars(node_name, node.control_plane, plan, group)))
+    extra_vars_dict = extra_vars(node_name, node.control_plane, plan, group)
+    if config_path:
+        extra_vars_dict["sage_config_path"] = config_path
+    vars_path.write_text(json.dumps(extra_vars_dict))
     log.info("remediation di %s: %s", node_name, json.dumps(plan))
     cmd = [
         "ansible-playbook",

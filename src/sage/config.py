@@ -45,6 +45,9 @@ class LlmEndpoint:
     api_key_env: str | None = None
     # Gruppo di nodi che ospita questo endpoint (per la regola requires_fallback).
     hosted_in_group: str | None = None
+    # L'endpoint può ricevere dati dei nodi, es. log di un aggiornamento fallito:
+    # solo server dentro il cluster, ADR-0004.
+    node_data: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,6 +270,9 @@ def _parse_llm(raw: dict[str, Any], errors: list[str]) -> LlmConfig:
         if name in names:
             errors.append(f"{where}.name: '{name}' duplicato")
         names.add(name)
+        node_data = ep.get("node_data", False)
+        if not isinstance(node_data, bool):
+            errors.append(f"{where}.node_data deve essere true o false")
         endpoints.append(
             LlmEndpoint(
                 name=name,
@@ -274,6 +280,7 @@ def _parse_llm(raw: dict[str, Any], errors: list[str]) -> LlmConfig:
                 model=model,
                 api_key_env=ep.get("api_key_env") or None,
                 hosted_in_group=ep.get("hosted_in_group") or None,
+                node_data=node_data,
             )
         )
     where = "llm"

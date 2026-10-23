@@ -38,6 +38,7 @@ llm:
       base_url: http://vllm.llm.svc:8000/v1
       model: openai/gpt-oss-120b
       hosted_in_group: gpu-llm           # gira su un nodo che SAGE aggiorna
+      node_data: true                    # l'endpoint può ricevere dati dei nodi (ADR-0004)
     - name: groq
       base_url: https://api.groq.com/openai/v1
       model: openai/gpt-oss-120b
