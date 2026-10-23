@@ -2,6 +2,11 @@
 
 ## Regole del progetto
 
+- **Va bene su ogni cluster, senza rompere niente** (ADR-0018): SAGE si installa in cluster già
+  configurati e di tutti i tipi. I default devono essere sicuri ovunque; SAGE non chiede
+  modifiche al cluster per funzionare. API lenta, etcd lento, master che riparte sono condizioni
+  normali: si riprova e si aspetta. Se una prova su un cluster vero fallisce, si corregge SAGE,
+  non il cluster di prova.
 - **Niente hardcoding** (ADR-0007): nessun IP, hostname, utente, nome di progetto o owner nel codice,
   nei test o nei template. Ogni parametro nuovo va in `src/sage/config.py` (con validazione),
   `examples/config.example.yaml` e `chart/sage/values.yaml`. I campi obbligatori non hanno default.
