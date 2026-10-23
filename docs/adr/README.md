@@ -22,3 +22,4 @@ si segna come sostituita e se ne scrive una nuova.
 | [0015](0015-controllore-in-loop.md) | Un controllore sempre acceso che fa il giro dei nodi |
 | [0016](0016-installer-eseguibile-unico.md) | L'installer come eseguibile unico |
 | [0017](0017-piu-distribuzioni.md) | Più distribuzioni (dnf, zypper, apt), stesso flusso |
+| [0018](0018-ogni-cluster-senza-rompere.md) | SAGE va bene su ogni cluster, senza rompere niente |
