@@ -1265,11 +1265,11 @@ class ApiRetries(unittest.TestCase):
 
 
 class LogReconnect(unittest.TestCase):
-    def test_log_reconnects_while_job_runs(self):
+    def follow(self, states):
         installer = inst.Installer(inst.parse_args(["--no-tui"]), inst.LineUI(False))
         self.addCleanup(shutil.rmtree, installer.tmp, True)
         runs = []
-        states = iter([True, False])  # dopo la prima interruzione il Job lavora ancora
+        states = iter(states)
         with (
             mock.patch.object(inst.subprocess, "run", lambda cmd, **k: runs.append(cmd)),
             mock.patch.object(installer, "job_active", lambda job: next(states)),
@@ -1277,9 +1277,39 @@ class LogReconnect(unittest.TestCase):
             mock.patch("builtins.print"),
         ):
             installer.follow_logs("sage-scan-1")
+        return runs
+
+    def test_finished_pod_is_not_followed_again(self):
+        """Il pod risulta terminato qualche secondo dopo la fine del log: nessun loop."""
+        runs = self.follow([True, True, False])
+        self.assertEqual(len(runs), 1)
+
+    def test_reconnects_while_pod_runs_with_short_since(self):
+        runs = self.follow([True] * inst.LOG_END_CHECKS + [False])
         self.assertEqual(len(runs), 2)
         self.assertNotIn("--since", " ".join(runs[0]))
-        self.assertTrue(runs[1][-1].startswith("--since="))
+        since = int(runs[1][-1].split("=")[1].rstrip("s"))
+        self.assertLess(since, 10)  # solo l'interruzione, non tutto il log da capo
+
+    def test_api_down_stops_following(self):
+        runs = self.follow([None] * inst.LOG_END_CHECKS)
+        self.assertEqual(len(runs), 1)
+
+    def test_job_active_reads_pods(self):
+        installer = inst.Installer(inst.parse_args(["--no-tui"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+
+        def pods(*phases):
+            items = [{"status": {"phase": p}} for p in phases]
+            out = json.dumps({"items": items})
+            return lambda *a, **k: subprocess.CompletedProcess([], 0, out, "")
+
+        with mock.patch.object(installer, "kubectl", pods("Running")):
+            self.assertTrue(installer.job_active("j"))
+        with mock.patch.object(installer, "kubectl", pods("Succeeded")):
+            self.assertFalse(installer.job_active("j"))
+        with mock.patch.object(installer, "kubectl", pods()):
+            self.assertFalse(installer.job_active("j"))
 
 
 class SystemCa(unittest.TestCase):
