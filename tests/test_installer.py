@@ -1358,6 +1358,63 @@ class PendingRelease(unittest.TestCase):
         with self.assertRaises(inst.Fail):
             self.calls(["deployed", "pending-upgrade"], updated=now)
 
+    def fake_cluster(self, upgrades):
+        """Installer con un helm finto: storia delle revisioni, upgrade con esiti dati."""
+        installer = inst.Installer(inst.parse_args(["--no-tui"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.1Z")
+        history = [{"revision": 1, "status": "deployed", "updated": now}]
+        calls = []
+
+        def add(status):
+            history.append({"revision": len(history) + 1, "status": status, "updated": now})
+
+        def helm(*args, check=True):
+            calls.append(args)
+            out, err, rc = "", "", 0
+            if args[0] == "history":
+                out = json.dumps(history)
+            elif args[0] == "status":
+                out = json.dumps({"version": history[-1]["revision"]})
+            elif args[0] == "rollback":
+                history[-1]["status"] = "failed"
+                add("deployed")
+            elif args[0] == "upgrade":
+                err = upgrades.pop(0)
+                rc = 1 if err else 0
+                add("pending-upgrade" if err else "deployed")
+            return subprocess.CompletedProcess([], rc, out, err)
+
+        installer.sleep = lambda s: None
+        for name, value in (("helm", helm), ("chart", lambda: "c.tgz"), ("apply_ca_bundle", str)):
+            patcher = mock.patch.object(installer, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return installer, calls, add
+
+    def test_mine_skips_age_check(self):
+        installer, calls, add = self.fake_cluster([])
+        add("pending-upgrade")  # appena creata: senza mine sarebbe "in corso"
+        with self.assertRaises(inst.Fail):
+            installer.recover_pending()
+        installer.recover_pending(mine=True)
+        self.assertIn(("rollback", "sage", "1"), calls)
+
+    def test_helm_apply_retries_after_etcd_timeout(self):
+        err = "Error: UPGRADE FAILED: create: failed to create: etcdserver: request timed out"
+        installer, calls, _ = self.fake_cluster([err, ""])
+        self.assertEqual(installer.helm_apply({}, "aggiornamento"), "4")
+        ops = [c[0] for c in calls if c[0] in ("upgrade", "rollback")]
+        self.assertEqual(ops, ["upgrade", "rollback", "upgrade"])
+        self.assertIn(("rollback", "sage", "1"), calls)
+
+    def test_helm_apply_real_error_fails_fast(self):
+        installer, calls, _ = self.fake_cluster(["Error: values don't meet the specifications"])
+        with self.assertRaises(inst.Fail):
+            installer.helm_apply({}, "aggiornamento")
+        self.assertEqual([c[0] for c in calls].count("upgrade"), 1)
+        self.assertIn(("rollback", "sage", "1"), calls)  # release lasciata pulita
+
 
 class SystemCa(unittest.TestCase):
     """CA del sistema per l'installer e per i pod (proxy che ispezionano TLS)."""

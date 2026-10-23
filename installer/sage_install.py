@@ -1495,6 +1495,10 @@ TRANSIENT_API_ERRORS = (
     "i/o timeout",
     "unexpected EOF",
     "http2: client connection lost",
+    "etcdserver: request timed out",
+    "etcdserver: leader changed",
+    "context deadline exceeded",
+    "Client.Timeout exceeded",
 )
 API_RETRIES = 4
 # Dove l'eseguibile si installa come comando di sistema.
@@ -1651,6 +1655,7 @@ class Installer:
         self.helm_bin = "helm"
         self.port = args.ssh_port or 22
         self.pending_secrets: list = []  # creati solo dopo la conferma finale
+        self.sleep = time.sleep  # sostituibile nei test
         self.kube_user = None
 
     # --- comandi
@@ -1946,7 +1951,7 @@ class Installer:
         self.recover_pending()
         return json.loads(self.helm("get", "values", self.release, "-o", "json").stdout) or {}
 
-    def recover_pending(self) -> None:
+    def recover_pending(self, mine: bool = False) -> None:
         """Un aggiornamento interrotto (API che cade, etcd lento) lascia la release in
         pending-*: Helm rifiuta ogni operazione e i valori letti sarebbero quelli mai
         applicati. Si torna all'ultima revisione andata a buon fine."""
@@ -1955,13 +1960,14 @@ class Installer:
             return
         # Anche un aggiornamento in corso (un'altra persona, adesso) è pending-*: si tocca
         # solo se è più vecchio del timeout di helm in run().
-        started = helm_time(history[-1].get("updated", ""))
-        now = datetime.datetime.now(datetime.timezone.utc)
-        if started is None or now - started < datetime.timedelta(seconds=600):
-            raise Fail(
-                f"un aggiornamento della release {self.release} è in corso "
-                f"(revisione {history[-1]['revision']}): riprova tra qualche minuto"
-            )
+        if not mine:
+            started = helm_time(history[-1].get("updated", ""))
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if started is None or now - started < datetime.timedelta(seconds=600):
+                raise Fail(
+                    f"un aggiornamento della release {self.release} è in corso "
+                    f"(revisione {history[-1]['revision']}): riprova tra qualche minuto"
+                )
         good = [h for h in history if h.get("status") in ("deployed", "superseded")]
         if not good:
             raise Fail(
@@ -2827,16 +2833,37 @@ class Installer:
         path = self.tmp / "values.json"
         path.write_text(json.dumps(values, indent=2))
         description = f"{who_text(self.kube_user)}: {action}"[:200]
-        self.helm(
-            "upgrade",
-            "--install",
-            self.release,
-            self.chart(),
-            "-f",
-            str(path),
-            "--description",
-            description,
-        )
+        # Tentativi per gli errori transienti
+        for _attempt in range(3):
+            proc = self.helm(
+                "upgrade",
+                "--install",
+                self.release,
+                self.chart(),
+                "-f",
+                str(path),
+                "--description",
+                description,
+                check=False,
+            )
+            if proc.returncode == 0:
+                break
+            # Controlla se è un errore transiente o un altro problema
+            text = (proc.stderr or "") + (proc.stdout or "")
+            if any(error in text for error in TRANSIENT_API_ERRORS) or "another operation" in text:
+                # Ritenta dopo un breve intervallo, con la release riportata all'ultima
+                # revisione buona se l'upgrade interrotto l'ha lasciata in pending-*
+                self.sleep(10)
+                self.recover_pending(mine=True)
+                continue
+            else:
+                # Errore non transiente, solleva eccezione
+                self.recover_pending(mine=True)
+                raise Fail(f"helm upgrade fallito: {text.strip()}")
+        else:
+            # Tutti i tentativi falliti
+            self.recover_pending(mine=True)
+            raise Fail(f"helm upgrade fallito dopo 3 tentativi: {text.strip()}")
         status = self.helm("status", self.release, "-o", "json", check=False)
         try:
             return str(json.loads(status.stdout)["version"])

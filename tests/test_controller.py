@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 import yaml
 
 from sage import controller, kube
@@ -215,6 +216,48 @@ def test_vanished_remediation_job_stops_everything():
     ctl.step(T0)
     cluster.jobs.clear()
     assert "FERMO" in ctl.step(T0 + timedelta(minutes=10))
+
+
+def test_job_creation_timeout_retries_instead_of_stopping():
+    """etcd lento: create_job va in timeout e il Job non esiste. Il nodo non è stato
+    toccato: si riprova, senza fermare il cluster."""
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN})
+    real_create = cluster.create_job
+
+    def timeout(manifest):
+        raise RuntimeError("etcdserver: request timed out")
+
+    cluster.create_job = timeout
+    with pytest.raises(RuntimeError):
+        ctl.step(T0)
+    cluster.create_job = real_create
+    later = T0 + timedelta(minutes=10)
+    assert "mai creato" in ctl.step(later)
+    assert "avviata su w1" in ctl.step(later)
+    assert not ctl.load().get("halted")
+
+
+def test_job_created_despite_timeout_is_followed():
+    """La risposta si perde ma il Job è stato creato: lo si segue, niente doppioni."""
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN})
+    real_create = cluster.create_job
+
+    def lost_reply(manifest):
+        real_create(manifest)
+        raise RuntimeError("context deadline exceeded")
+
+    cluster.create_job = lost_reply
+    with pytest.raises(RuntimeError):
+        ctl.step(T0)
+    cluster.create_job = real_create
+    assert "in corso" in ctl.step(T0 + timedelta(minutes=10))
+    assert len(remediated(cluster)) == 1
 
 
 def test_unready_and_unreached_nodes_are_skipped_not_waited():
