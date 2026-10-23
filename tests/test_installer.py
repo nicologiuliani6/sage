@@ -5,6 +5,7 @@ Scritti con unittest e senza dipendenze, così la CI li esegue anche con Python 
 """
 
 import base64
+import datetime
 import gzip
 import hashlib
 import importlib.util
@@ -1310,6 +1311,43 @@ class LogReconnect(unittest.TestCase):
             self.assertFalse(installer.job_active("j"))
         with mock.patch.object(installer, "kubectl", pods()):
             self.assertFalse(installer.job_active("j"))
+
+
+class PendingRelease(unittest.TestCase):
+    """Aggiornamento interrotto: la release in pending-* torna all'ultima revisione buona."""
+
+    def calls(self, statuses, updated="2020-01-01T00:00:00.1Z"):
+        installer = inst.Installer(inst.parse_args(["--no-tui"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        history = [
+            {"revision": i + 1, "status": s, "updated": updated} for i, s in enumerate(statuses)
+        ]
+        calls = []
+
+        def helm(*args, check=True):
+            calls.append(args)
+            out = json.dumps(history) if args[0] == "history" else ""
+            return subprocess.CompletedProcess([], 0, out, "")
+
+        with mock.patch.object(installer, "helm", helm):
+            installer.recover_pending()
+        return [c for c in calls if c[0] == "rollback"]
+
+    def test_pending_upgrade_rolls_back_to_last_good(self):
+        rollbacks = self.calls(["superseded", "deployed", "pending-upgrade"])
+        self.assertEqual(rollbacks, [("rollback", "sage", "2")])
+
+    def test_deployed_release_untouched(self):
+        self.assertEqual(self.calls(["superseded", "deployed"]), [])
+
+    def test_failed_first_install_asks_for_uninstall(self):
+        with self.assertRaises(inst.Fail):
+            self.calls(["pending-install"])
+
+    def test_upgrade_in_progress_not_touched(self):
+        now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.123456789Z")
+        with self.assertRaises(inst.Fail):
+            self.calls(["deployed", "pending-upgrade"], updated=now)
 
 
 class SystemCa(unittest.TestCase):

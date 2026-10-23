@@ -1933,7 +1933,36 @@ class Installer:
         status = self.helm("status", self.release, check=False)
         if status.returncode != 0:
             return None
+        self.recover_pending()
         return json.loads(self.helm("get", "values", self.release, "-o", "json").stdout) or {}
+
+    def recover_pending(self) -> None:
+        """Un aggiornamento interrotto (API che cade, etcd lento) lascia la release in
+        pending-*: Helm rifiuta ogni operazione e i valori letti sarebbero quelli mai
+        applicati. Si torna all'ultima revisione andata a buon fine."""
+        history = json.loads(self.helm("history", self.release, "-o", "json").stdout or "[]")
+        if not history or not history[-1].get("status", "").startswith("pending-"):
+            return
+        # Anche un aggiornamento in corso (un'altra persona, adesso) è pending-*: si tocca
+        # solo se è più vecchio del timeout di helm in run().
+        started = datetime.datetime.strptime(history[-1]["updated"][:19], "%Y-%m-%dT%H:%M:%S")
+        if datetime.datetime.utcnow() - started < datetime.timedelta(seconds=600):
+            raise Fail(
+                f"un aggiornamento della release {self.release} è in corso "
+                f"(revisione {history[-1]['revision']}): riprova tra qualche minuto"
+            )
+        good = [h for h in history if h.get("status") in ("deployed", "superseded")]
+        if not good:
+            raise Fail(
+                f"la release {self.release} è rimasta a metà della prima installazione: "
+                f"helm -n {self.ns} uninstall {self.release}, poi rilancia sage"
+            )
+        revision = str(good[-1]["revision"])
+        self.ui.warn(
+            f"l'ultimo aggiornamento non è finito (revisione {history[-1]['revision']}, "
+            f"{history[-1]['status']}): torno alla revisione {revision}"
+        )
+        self.helm("rollback", self.release, revision)
 
     # --- configurazione
     def configure(self, current: dict, new: bool) -> int:
