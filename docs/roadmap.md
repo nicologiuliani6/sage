@@ -36,6 +36,6 @@
 - [ ] Stabilità delle risposte del modello
 
 ### Estensioni
-- [ ] Prova end-to-end della remediation su un nodo Debian/Ubuntu e SUSE reale
+- [ ] Prova end-to-end della remediation su una VM SUSE (Debian è già in CI)
 - [ ] Amazon Linux 2023 (`releasever=latest`), Alpine, Arch
 - [ ] Dashboard: azioni operative (spegni, giro, riprendi) con login tramite token Kubernetes

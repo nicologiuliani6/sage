@@ -21,3 +21,5 @@ checked uv run --no-project --python 3.9 python -m unittest -v tests.test_instal
 uv run sage check-config --config examples/config.example.yaml
 # Il collector sui gestori di pacchetti veri, in container delle distro (ADR-0017).
 bash ci/distros.sh
+# La remediation vera su una VM Debian: aggiornamento, riavvio e rollback (ADR-0017).
+bash ci/vm_debian.sh

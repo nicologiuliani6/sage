@@ -1228,6 +1228,40 @@ class Command(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class ClusterLlmCheck(unittest.TestCase):
+    """Un endpoint .svc non risponde dal master: si prova da un pod nel cluster."""
+
+    def test_parse(self):
+        out = 'rumore\nSAGE-LLM:{"problem": null, "models": ["qwen3:8b"]}\n'
+        self.assertEqual(inst.parse_cluster_llm_check(out), (None, ["qwen3:8b"]))
+        self.assertEqual(inst.parse_cluster_llm_check("Error: pod non partito")[1], [])
+
+    def test_script_runs_with_python39(self):
+        compile(inst.CLUSTER_LLM_CHECK, "check", "exec")
+
+    def test_pod_gets_key_on_stdin(self):
+        installer = inst.Installer(inst.parse_args(["--no-tui"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        calls = []
+
+        def fake_run(cmd, input=None, check=True, timeout=None):
+            calls.append((cmd, input))
+            out = 'SAGE-LLM:{"problem": null, "models": ["m1"]}' if "run" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 1 if "get" in cmd else 0, out, "")
+
+        with (
+            mock.patch.object(inst, "run", fake_run),
+            mock.patch.dict(inst.RELEASE, {"image": "registry.example/sage@sha256:00"}),
+        ):
+            result = installer.cluster_llm_models("http://ollama.llm.svc:11434/v1", "segreto")
+        self.assertEqual(result, (None, ["m1"]))
+        run_cmd, stdin = next(c for c in calls if "run" in c[0])
+        self.assertIn("default", run_cmd)  # namespace di SAGE non ancora creato
+        self.assertNotIn("segreto", json.dumps(run_cmd))  # la chiave non è nel pod
+        self.assertEqual(stdin, "segreto\n")
+        self.assertTrue(any("delete" in c[0] for c in calls))  # pod sempre tolto
+
+
 class ResumeFollow(unittest.TestCase):
     """--resume resta attaccato: finito un nodo passa al successivo, fino a Ctrl+C."""
 
