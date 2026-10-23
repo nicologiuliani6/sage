@@ -56,10 +56,7 @@ decisioni e i piani restano gli stessi.
   recente e renderlo `python3`, altrimenti l'installer esclude il nodo con un messaggio chiaro.
 - **Prove**: oltre ai test con dati sintetici (formati presi dagli output reali), la CI fa
   girare il collector in container Debian, Ubuntu, openSUSE, AlmaLinux e Fedora fissati per
-  digest (`ci/distros.sh`) e ne controlla il JSON. Su una **VM Debian** vera (immagine cloud
-  datata, KVM sul runner, `ci/vm_debian.sh`) prova tutto il percorso con `remediate.yml`:
-  collector, OSV, errore a metà con rollback alla versione di prima, aggiornamento completo
-  con riavvio e controllo finale senza più niente da aggiornare.
+  digest (`ci/distros.sh`) e ne controlla il JSON.
 - **Endpoint LLM nel cluster**: un indirizzo come `http://ollama.<namespace>.svc:11434/v1` si
   risolve solo dai pod. Se dal master non risponde, l'installer lo controlla da un pod
   temporaneo con l'immagine di SAGE (la chiave passa da stdin, il pod viene sempre tolto).
