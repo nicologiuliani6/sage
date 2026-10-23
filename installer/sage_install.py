@@ -1342,6 +1342,39 @@ def llm_models(base_url: str, key: str | None) -> tuple[str | None, list[str]]:
     return None, ids
 
 
+# Stesso controllo di llm_models, eseguito in un pod: per gli indirizzi che si risolvono
+# solo dentro il cluster (es. http://ollama.llm.svc:11434/v1). La chiave arriva da stdin,
+# non dagli argomenti, così non resta nella definizione del pod.
+CLUSTER_LLM_CHECK = """
+import json, sys, urllib.error, urllib.request
+url, key = sys.argv[1], sys.stdin.readline().strip()
+headers = {"Authorization": "Bearer " + key} if key else {}
+try:
+    req = urllib.request.Request(url.rstrip("/") + "/models", headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.load(resp)
+    items = data.get("data", []) if isinstance(data, dict) else []
+    ids = sorted({m["id"] for m in items if isinstance(m, dict) and isinstance(m.get("id"), str)})
+    out = {"problem": None, "models": ids}
+except urllib.error.HTTPError as e:
+    out = {"problem": "risposta HTTP %d" % e.code, "models": []}
+except Exception as e:
+    out = {"problem": "non raggiungibile dal cluster (%s)" % getattr(e, "reason", e), "models": []}
+print("SAGE-LLM:" + json.dumps(out))
+"""
+
+
+def parse_cluster_llm_check(output: str) -> tuple[str | None, list[str]]:
+    for line in reversed(output.splitlines()):
+        if line.startswith("SAGE-LLM:"):
+            try:
+                data = json.loads(line[len("SAGE-LLM:") :])
+                return data.get("problem"), [str(m) for m in data.get("models") or []]
+            except ValueError:
+                break
+    return "controllo dal cluster non riuscito", []
+
+
 def endpoint_name(base_url: str, taken) -> str:
     """Nome breve dall'host (es. api.esempio.com -> esempio), unico tra quelli usati."""
     host = urllib.parse.urlparse(base_url).hostname or ""
@@ -2393,6 +2426,12 @@ class Installer:
         while True:
             ui.busy(f"Contatto {base_url}...")
             problem, models = llm_models(base_url, key or None)
+            if problem is not None and problem.startswith("non raggiungibile"):
+                # Es. un servizio del cluster (.svc): lo raggiungono i pod, non il master.
+                ui.busy(f"Da qui non risponde: provo da un pod nel cluster ({base_url})...")
+                problem, models = self.cluster_llm_models(base_url, key or None)
+                if problem is None:
+                    ui.ok(f"{base_url} risponde dal cluster")
             if problem is None:
                 break
             ui.warn(f"{base_url}: {problem}")
@@ -2540,6 +2579,62 @@ class Installer:
             return {}
         data = json.loads(proc.stdout).get("data") or {}
         return {k: base64.b64decode(v).decode() for k, v in data.items()}
+
+    def cluster_llm_models(self, base_url: str, key: str | None) -> tuple[str | None, list[str]]:
+        """Controlla l'endpoint LLM da un pod temporaneo con l'immagine di SAGE."""
+        image = self.args.image or RELEASE.get("image")
+        if not image:
+            return "controllo dal cluster non possibile (immagine di SAGE sconosciuta)", []
+        exists = self.kubectl("get", "namespace", self.ns, check=False).returncode == 0
+        namespace = self.ns if exists else "default"
+        name = "sage-llm-check-" + os.urandom(3).hex()
+        container = {
+            "name": name,
+            "image": image,
+            "command": ["python3", "-c", CLUSTER_LLM_CHECK, base_url],
+            "stdin": True,
+            "stdinOnce": True,
+            "securityContext": {
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "capabilities": {"drop": ["ALL"]},
+            },
+        }
+        overrides = {
+            "apiVersion": "v1",
+            "spec": {
+                "securityContext": {
+                    "runAsNonRoot": True,
+                    "runAsUser": 10001,
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                },
+                "containers": [container],
+            },
+        }
+        cmd = ["kubectl"] + (["--context", self.args.context] if self.args.context else [])
+        cmd += ["-n", namespace, "run", name, "--image", image, "--restart=Never", "--rm"]
+        cmd += ["-i", "--quiet", "--pod-running-timeout=120s"]
+        cmd += ["--overrides", json.dumps(overrides)]
+        try:
+            proc = run(cmd, input=(key or "") + "\n", check=False, timeout=180)
+        except Exception as e:  # timeout, kubectl assente
+            return f"controllo dal cluster non riuscito ({e})", []
+        finally:
+            # --rm non basta se kubectl viene interrotto: il pod non deve restare.
+            self.kubectl(
+                "-n",
+                namespace,
+                "delete",
+                "pod",
+                name,
+                "--ignore-not-found",
+                "--wait=false",
+                check=False,
+            )
+        problem, models = parse_cluster_llm_check(proc.stdout)
+        if problem == "controllo dal cluster non riuscito" and proc.stderr.strip():
+            problem += f" ({proc.stderr.strip().splitlines()[-1]})"
+        return problem, models
 
     def ensure_namespace(self) -> None:
         if self.kubectl("get", "namespace", self.ns, check=False).returncode == 0:
