@@ -12,12 +12,14 @@ controllore* (`suspend: true` nei valori).
 
 ## Dopo una remediation fallita
 
-SAGE ha già annullato la transazione dnf (se possibile), tolto i blocchi dei moduli aggiunti e
+SAGE ha già riportato i pacchetti alla versione di prima, se possibile (dnf: `history undo`;
+zypper e apt: reinstalla le versioni precedenti se il repository le ha ancora), tolto i blocchi dei moduli aggiunti e
 lasciato il nodo in cordon. Il controllore resta fermo: nessun altro nodo viene toccato.
 
 1. Leggi il log: `kubectl -n <namespace> logs job/<release>-fix-<nodo>-<data>`
-2. Controlla il nodo. Se l'errore era sul kernel, il rollback dnf non può togliere il kernel in
-   esecuzione: riavvia sul kernel precedente (`grubby --set-default ...`) se serve.
+2. Controlla il nodo. Se l'errore era sul kernel, il rollback non può togliere il kernel in
+   esecuzione: riavvia sul kernel precedente se serve (`grubby --set-default ...` su RHEL,
+   `GRUB_DEFAULT` e `update-grub` su Debian e Ubuntu, `grub2-set-default` su SUSE).
 3. `kubectl uncordon <nodo>`
 4. Riprendi: `kubectl -n <namespace> create configmap <release>-resume`. Il controllore la
    legge al passo successivo, la cancella e continua il giro dal nodo dopo.

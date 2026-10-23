@@ -21,8 +21,13 @@ attivamente) hanno una scadenza (6 ore per default) visibile nella dashboard.
 
 ## Requisiti
 
-- Cluster Kubernetes con nodi della famiglia RHEL (Rocky, RHEL, AlmaLinux 8 o 9): la
-  remediation usa dnf.
+- Cluster Kubernetes con nodi di una di queste famiglie (anche mescolate, ADR-0017):
+  - RHEL, Rocky, AlmaLinux, Oracle Linux 9 o successive, Fedora (dnf);
+  - SLES e openSUSE (zypper);
+  - Debian 11 o successiva, Ubuntu 22.04 o successiva (apt; le CVE arrivano da OSV).
+
+  Su ogni nodo `python3` deve essere almeno 3.9. RHEL 8 e SLES 15 hanno il 3.6: va installato
+  un Python più recente (`python39`, `python311`) e reso `python3`.
 - Un master (o una macchina) con `kubectl` da amministratore del cluster e accesso SSH ai nodi
   con un utente che ha sudo senza password. Helm non serve: se manca, l'installer lo scarica
   con il checksum fissato nella release.
@@ -48,7 +53,7 @@ rm sage SHA256SUMS
 - `--live`: modalità reale da subito. Finito il primo controllo, SAGE inizia ad aggiornare i
   nodi.
 - `--allow-remove`: SAGE può anche rimuovere i pacchetti inutilizzati (nessun processo li usa da
-  almeno 7 giorni, nessun servizio del nodo ne ha bisogno, `dnf remove` simulato non si porta
+  almeno 7 giorni, nessun servizio del nodo ne ha bisogno, la rimozione simulata non si porta
   dietro altro, non protetti).
 - Al primo avvio l'eseguibile si installa come comando di sistema `/usr/local/bin/sage`: da lì
   in poi basta `sage`.
@@ -63,8 +68,8 @@ normali):
 
 1. **Nodi** da gestire: spazio per spuntare, `a` tutti, invio per confermare. I nodi con un OS
    non supportato sono visibili ma non selezionabili.
-2. **Utente SSH**: crea la chiave dedicata a SAGE, la installa sui nodi e controlla sudo, dnf e
-   python3.
+2. **Utente SSH**: crea la chiave dedicata a SAGE, la installa sui nodi e controlla sudo, il gestore
+   di pacchetti e python3.
 3. **Gruppi**: proposti da Kubernetes (control-plane: master; nodi con GPU: gpu; gli altri:
    worker). Si possono spostare i nodi tra i gruppi, scegliere il canary, decidere se il kernel
    si aggiorna nel giro o solo a mano, attivare rimozioni e mitigazioni.
@@ -119,7 +124,9 @@ kubectl -n sage get configmap sage-report -o jsonpath='{.binaryData.data\.json\.
 
 - **Fermare tutto**: `sage`, *Spegni il controllore*. Per tornare a non toccare i nodi:
   *Torna alla simulazione*.
-- **Remediation fallita**: SAGE annulla la transazione dnf e si ferma su tutto il cluster. Se il
+- **Remediation fallita**: SAGE riporta i pacchetti alla versione di prima (dnf: annulla la
+  transazione; zypper e apt: reinstalla le versioni precedenti, se il repository le ha ancora)
+  e si ferma su tutto il cluster. Se il
   nodo era stato modificato resta in cordon. Leggi il log (`sage --resume`), controlla il nodo,
   `kubectl uncordon <nodo>` se serve, poi `kubectl -n sage create configmap sage-resume`: il
   giro continua dal nodo successivo, quello fallito viene ritentato al giro dopo.
@@ -127,7 +134,8 @@ kubectl -n sage get configmap sage-report -o jsonpath='{.binaryData.data\.json\.
   Kubernetes lo riavvia da solo; riparte dal punto salvato.
 - **Nodo "saltato: advisory ancora presenti"**: dopo una remediation riuscita il controllo vede
   ancora le stesse advisory. SAGE non lo riaggiorna in loop: serve un controllo a mano
-  (`dnf updateinfo list --security` sul nodo).
+  (`dnf updateinfo list --security`, `zypper list-patches --category security` o
+  `apt list --upgradable` sul nodo).
 - **Nessun report da un nodo**: problema SSH. `sage`, *Riconfigura*: ricontrolla accesso, sudo e
   chiavi host.
 - **Il pod non parte (ErrImagePull)**: immagine privata. Rendila pubblica o fai creare un pull

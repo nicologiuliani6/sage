@@ -25,9 +25,10 @@ remediation            un nodo alla volta: gruppi in ordine (master per ultimi),
                        nodi non Ready, in cordon o non raggiunti: saltati in quel giro
 
 sage remediate (Job, mai sul nodo bersaglio)
-  remediate.yml: cordon → drain → dnf / rimozione / blocco moduli → riavvio se serve
+  remediate.yml: cordon → drain → dnf, zypper o apt / rimozione / blocco moduli → riavvio se serve
                  → nodo Ready → (master: apiserver, etcd) → uncordon → controlli di salute
-  errore → rollback della transazione dnf, nodo in cordon, tutto fermo fino a `<release>-resume`
+  errore → rollback (dnf: transazione; zypper e apt: versioni di prima), nodo in cordon,
+           tutto fermo fino a `<release>-resume`
 ```
 
 ## Il ruolo dell'LLM
@@ -48,7 +49,7 @@ contro uno schema e messe in cache per CVE e pacchetto.
 ## Rimozione e mitigazione
 
 - **Rimozione**: decisa dalla policy sui fatti, non dall'LLM. Pacchetto inutilizzato da
-  `idle_scans_required` controlli e `idle_days_required` giorni, `dnf remove` simulato senza altri pacchetti coinvolti, non
+  `idle_scans_required` controlli e `idle_days_required` giorni, rimozione simulata senza altri pacchetti coinvolti, non
   protetto, gruppo con `allow_remove`.
 - **Mitigazione**: blocco di un modulo del kernel proposto dall'LLM e verificato (modulo
   disponibile ma non caricato su nessun nodo del gruppo, coerente con i file colpiti, non
