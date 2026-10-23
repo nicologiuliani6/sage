@@ -58,9 +58,18 @@ group_known if {
 	input.node.group != ""
 }
 
-is_kernel if startswith(input.package.name, "kernel")
+# Famiglie RHEL e SUSE ("kernel*"), Debian e Ubuntu ("linux-image-*", "linux-modules-*").
+kernel_prefixes := ["kernel", "linux-image-", "linux-modules-"]
 
-boot_patterns := ["grub2*", "shim*", "dracut*", "microcode_ctl", "*-firmware*", "linux-firmware*"]
+is_kernel if {
+	some prefix in kernel_prefixes
+	startswith(input.package.name, prefix)
+}
+
+boot_patterns := [
+	"grub*", "shim*", "dracut*", "initramfs-tools*", "microcode_ctl", "*-microcode",
+	"ucode-*", "*-firmware*", "firmware-*", "linux-firmware*",
+]
 
 is_boot if {
 	some pattern in boot_patterns

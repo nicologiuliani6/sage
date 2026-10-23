@@ -3,9 +3,17 @@
 # Lanciato da `sage remediate` dentro un Job che gira su un altro nodo, oppure a mano
 # dal bastion in emergenza (con -e sage_kube=false se l'API Kubernetes non risponde).
 #
+# Stesso flusso per tutte le distro; cambia solo il gestore di pacchetti (ADR-0017):
+#   dnf     advisory con `dnf upgrade --advisory`, rollback con `dnf history undo`
+#   zypper  patch con `zypper install -t patch`, rollback alle versioni precedenti
+#   apt     pacchetti con `apt-get install --only-upgrade`, rollback alle versioni
+#           precedenti se ancora nei repository; riavvio dopo ogni aggiornamento
+#
 # Variabili (da -e @vars.json):
 #   sage_node_name           nome del nodo Kubernetes (obbligatorio)
-#   sage_update_advisories   advisory da applicare con dnf upgrade --advisory
+#   sage_update_advisories   advisory da applicare (dnf: advisory, zypper: patch)
+#   sage_update_packages     pacchetti da aggiornare (apt)
+#   sage_package_manager     auto (predefinito) | dnf | zypper | apt
 #   sage_remove_packages     pacchetti da rimuovere
 #   sage_denylist_modules    moduli del kernel da bloccare
 #   sage_drain_mode          evict | wait-empty
@@ -25,6 +33,8 @@
     # Il nodo va svuotato solo per aggiornamenti e rimozioni, e solo se c'è l'API.
     sage_disrupt: "{{ sage_kube | bool and not sage_light | bool }}"
     sage_update_advisories: []
+    sage_update_packages: []
+    sage_package_manager: auto
     sage_remove_packages: []
     sage_denylist_modules: []
     sage_drain_mode: evict
@@ -34,8 +44,20 @@
     sage_health_urls: []
     sage_denylist_file: /etc/modprobe.d/sage-denylist.conf
     sage_applied: false
+    # Comandi per gestore di pacchetti. Le istantanee danno righe "nome=versione".
+    sage_snapshot_cmd:
+      zypper: ["rpm", "-qa", "--qf", "%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n"]
+      apt: ["dpkg-query", "-W", "-f", "${Package}=${Version}\n"]
+    sage_remove_cmd:
+      dnf: ["dnf", "-y", "remove", "--noautoremove"]
+      zypper: ["zypper", "-n", "remove", "--no-clean-deps"]
+      apt: ["apt-get", "-y", "remove"]
+    sage_downgrade_cmd:
+      zypper: ["zypper", "-n", "install", "--oldpackage"]
+      apt: ["apt-get", "-y", "install", "--allow-downgrades"]
   environment:
     LC_ALL: C
+    DEBIAN_FRONTEND: noninteractive
   tasks:
     - name: Controlli preliminari
       ansible.builtin.assert:
@@ -47,11 +69,41 @@
 
     - name: Remediation
       block:
+        - name: Gestore di pacchetti del nodo
+          ansible.builtin.shell: |
+            for pm in dnf zypper apt-get; do
+              if command -v "$pm" > /dev/null; then echo "$pm"; exit 0; fi
+            done
+            exit 1
+          register: sage_pm_found
+          changed_when: false
+          when: sage_package_manager == 'auto'
+
+        - name: Gestore di pacchetti scelto
+          ansible.builtin.set_fact:
+            sage_pm: >-
+              {{ (sage_pm_found.stdout | trim | replace('apt-get', 'apt'))
+                 if sage_package_manager == 'auto' else sage_package_manager }}
+
+        - name: Gestore di pacchetti supportato
+          ansible.builtin.assert:
+            that: sage_pm in ['dnf', 'zypper', 'apt']
+            fail_msg: "gestore di pacchetti non supportato: {{ sage_pm }}"
+
         - name: Ultima transazione dnf prima dell'intervento
           ansible.builtin.command: dnf -q history info last
           register: sage_tx_before
           changed_when: false
           failed_when: false
+          when: sage_pm == 'dnf'
+
+        # apt e zypper non hanno una cronologia da annullare: si salvano le versioni.
+        - name: Versioni dei pacchetti prima dell'intervento
+          ansible.builtin.command:
+            argv: "{{ sage_snapshot_cmd[sage_pm] }}"
+          register: sage_snap_before
+          changed_when: false
+          when: sage_pm != 'dnf'
 
         - name: Cordon
           kubernetes.core.k8s_drain:
@@ -110,13 +162,31 @@
         - name: Applica le advisory di sicurezza
           ansible.builtin.command:
             argv: "{{ ['dnf', '-y', 'upgrade'] + (sage_update_advisories | map('regex_replace', '^', '--advisory=') | list) }}"
-          when: sage_update_advisories | length > 0
+          when: sage_pm == 'dnf' and sage_update_advisories | length > 0
           register: sage_update
           changed_when: "'Nothing to do' not in sage_update.stdout"
 
+        # 103: zypper ha aggiornato se stesso e va rilanciato; 102: serve un riavvio.
+        - name: Applica le patch di sicurezza
+          ansible.builtin.command:
+            argv: "{{ ['zypper', '-n', 'install', '-t', 'patch'] + sage_update_advisories }}"
+          when: sage_pm == 'zypper' and sage_update_advisories | length > 0
+          register: sage_zypper
+          until: sage_zypper.rc != 103
+          retries: 3
+          delay: 1
+          failed_when: sage_zypper.rc not in [0, 102, 103]
+          changed_when: true
+
+        - name: Aggiorna i pacchetti di sicurezza
+          ansible.builtin.command:
+            argv: "{{ ['apt-get', '-y', 'install', '--only-upgrade', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold'] + sage_update_packages }}"
+          when: sage_pm == 'apt' and sage_update_packages | length > 0
+          changed_when: true
+
         - name: Rimuovi i pacchetti inutilizzati
           ansible.builtin.command:
-            argv: "{{ ['dnf', '-y', 'remove', '--noautoremove'] + sage_remove_packages }}"
+            argv: "{{ sage_remove_cmd[sage_pm] + sage_remove_packages }}"
           when: sage_remove_packages | length > 0
           changed_when: true
 
@@ -129,24 +199,41 @@
           loop: "{{ ['install', 'blacklist'] | product(sage_denylist_modules) | list }}"
           register: sage_blocks
 
-        - name: Ultima transazione dnf dopo l'intervento
-          ansible.builtin.command: dnf -q history info last
-          register: sage_tx_after
+        - name: Riavvio necessario? (dnf)
+          ansible.builtin.command: dnf needs-restarting -r
+          register: sage_restart_dnf
+          changed_when: false
+          failed_when: sage_restart_dnf.rc not in [0, 1]
+          when: not sage_light | bool and sage_pm == 'dnf'
+
+        # 102 = serve un riavvio. Un codice inatteso (zypper vecchio) vale come "sì".
+        - name: Riavvio necessario? (zypper)
+          ansible.builtin.command: zypper needs-rebooting
+          register: sage_restart_zypper
           changed_when: false
           failed_when: false
+          when: not sage_light | bool and sage_pm == 'zypper'
 
-        - name: Riavvio necessario?
-          ansible.builtin.command: dnf needs-restarting -r
-          register: sage_restart
+        # apt non dice quali processi usano librerie vecchie: dopo un aggiornamento si
+        # riavvia sempre (il nodo è già svuotato).
+        - name: Versioni dei pacchetti dopo l'intervento
+          ansible.builtin.command:
+            argv: "{{ sage_snapshot_cmd[sage_pm] }}"
+          register: sage_snap_after
           changed_when: false
-          failed_when: sage_restart.rc not in [0, 1]
-          when: not sage_light | bool
+          when: not sage_light | bool and sage_pm == 'apt'
 
         - name: Riavvia il nodo
           ansible.builtin.reboot:
             reboot_timeout: 1800
             msg: "SAGE: riavvio dopo aggiornamenti di sicurezza"
-          when: not sage_light | bool and sage_restart.rc == 1
+          when: not sage_light | bool and sage_reboot | bool
+          vars:
+            sage_reboot: >-
+              {{ (sage_pm == 'dnf' and sage_restart_dnf.rc == 1)
+                 or (sage_pm == 'zypper' and sage_restart_zypper.rc != 0)
+                 or (sage_pm == 'apt'
+                     and (sage_snap_before.stdout_lines | difference(sage_snap_after.stdout_lines) | length > 0)) }}
 
         - name: Attendi che il nodo sia Ready
           kubernetes.core.k8s_info:
@@ -224,22 +311,40 @@
           ansible.builtin.debug:
             msg: "remediation fallita su {{ sage_node_name }}: {{ ansible_failed_result.msg | default('vedi sopra') }}"
 
-        # L'errore può arrivare anche a metà di dnf: si legge la transazione adesso.
+        # L'errore può arrivare anche a metà dell'aggiornamento: si legge lo stato adesso.
         - name: Ultima transazione dnf al momento dell'errore
           ansible.builtin.command: dnf -q history info last
           register: sage_tx_now
           changed_when: false
           failed_when: false
-          when: sage_applied | bool
+          when: sage_applied | bool and sage_pm | default('') == 'dnf'
 
-        # Modificato davvero solo se dnf ha registrato una transazione nuova o sono stati
-        # scritti blocchi di moduli. Un dnf che si ferma prima (dipendenze non risolte)
-        # non tocca il nodo: lo si rimette in servizio.
+        - name: Versioni dei pacchetti al momento dell'errore
+          ansible.builtin.command:
+            argv: "{{ sage_snapshot_cmd[sage_pm] }}"
+          register: sage_snap_now
+          changed_when: false
+          failed_when: false
+          when: sage_applied | bool and sage_pm | default('') in ['zypper', 'apt']
+
+        # Pacchetti la cui versione di prima non c'è più (aggiornati o rimossi): con apt e
+        # zypper sono quelli da riportare indietro.
+        - name: Pacchetti cambiati
+          ansible.builtin.set_fact:
+            sage_changed: >-
+              {{ (sage_snap_before.stdout_lines | default([]))
+                 | difference(sage_snap_now.stdout_lines | default([])) }}
+          when: sage_applied | bool and sage_pm | default('') in ['zypper', 'apt']
+
+        # Modificato davvero solo se c'è una transazione dnf nuova, un pacchetto cambiato o
+        # un blocco di moduli scritto. Un aggiornamento che si ferma prima (dipendenze non
+        # risolte) non tocca il nodo: lo si rimette in servizio.
         - name: Il nodo è stato modificato?
           ansible.builtin.set_fact:
             sage_modified: >-
               {{ (sage_applied | bool)
                  and ((sage_tx_now_id != sage_tx_prev_id)
+                      or (sage_changed | default([]) | length > 0)
                       or (sage_blocks is defined and sage_blocks.changed | default(false))) }}
           vars:
             sage_tx_now_id: "{{ sage_tx_now.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
@@ -261,6 +366,7 @@
             sage_tx_prev: "{{ sage_tx_before.stdout | default('') | regex_findall('Transaction ID[ ]*:[ ]*([0-9]+)') | first | default('') }}"
           when:
             - sage_modified | bool
+            - sage_pm | default('') == 'dnf'
             - sage_tx_id | length > 0
             - sage_tx_id != sage_tx_prev
           register: sage_undo
@@ -269,9 +375,22 @@
           # si prosegue (il nodo resta in cordon, serve un riavvio sul kernel precedente).
           failed_when: false
 
+        # Le versioni precedenti si reinstallano se il repository le ha ancora (Debian e
+        # Ubuntu tengono la versione del rilascio, non sempre gli aggiornamenti intermedi).
+        - name: Riporta i pacchetti alle versioni precedenti
+          ansible.builtin.command:
+            argv: "{{ sage_downgrade_cmd[sage_pm] + sage_changed }}"
+          when:
+            - sage_modified | bool
+            - sage_pm | default('') in ['zypper', 'apt']
+            - sage_changed | default([]) | length > 0
+          register: sage_undo
+          changed_when: true
+          failed_when: false
+
         - name: Rollback non riuscito
           ansible.builtin.debug:
-            msg: "ATTENZIONE: rollback dnf non riuscito: {{ sage_undo.stdout_lines | default([]) | last | default('') }}"
+            msg: "ATTENZIONE: rollback non riuscito: {{ sage_undo.stdout_lines | default([]) | last | default('') }}"
           when: sage_undo is defined and sage_undo.rc is defined and sage_undo.rc != 0
 
         - name: Togli i blocchi dei moduli aggiunti in questo intervento

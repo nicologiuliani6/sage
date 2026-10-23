@@ -79,13 +79,25 @@ CLUSTER = {
         node("w1", "192.0.2.11"),
         node("cp1", "192.0.2.1", cp=True),
         node("g1", "192.0.2.21", gpus=2),
-        node("u1", "192.0.2.31", os_image="Ubuntu 24.04 LTS"),
+        node("u1", "192.0.2.31", os_image="Arch Linux"),
         node("x1", None),
     ]
 }
 
 
 class NodesAndGroups(unittest.TestCase):
+    def test_supported_distros(self):
+        for os_image in (
+            "Rocky Linux 9.4 (Blue Onyx)",
+            "Debian GNU/Linux 12 (bookworm)",
+            "Ubuntu 24.04.1 LTS",
+            "SUSE Linux Enterprise Server 15 SP6",
+            "openSUSE Leap 16.0",
+            "Amazon Linux 2023.6.20241010",
+        ):
+            n = inst.parse_nodes({"items": [node("n1", "192.0.2.9", os_image=os_image)]})[0]
+            self.assertIsNone(n.problem, os_image)
+
     def test_parse_nodes(self):
         nodes = inst.parse_nodes(CLUSTER)
         self.assertEqual([n.name for n in nodes], ["cp1", "g1", "u1", "w1", "w2", "x1"])
@@ -535,8 +547,12 @@ class RemoteCommands(unittest.TestCase):
         self.assertIsNotNone(inst.parse_check(out.stdout))
         self.assertEqual(inst.parse_check("motd\nSAGE-CHECK:"), [])
         self.assertEqual(
-            inst.parse_check("SAGE-CHECK: sudo python"),
-            ["sudo senza password non disponibile", "manca python3 >= 3.9"],
+            inst.parse_check("SAGE-CHECK: sudo pm python"),
+            [
+                "sudo senza password non disponibile",
+                inst.CHECK_MESSAGES["pm"],
+                inst.CHECK_MESSAGES["python"],
+            ],
         )
         self.assertIsNone(inst.parse_check("Permission denied"))
 
@@ -777,7 +793,7 @@ class EndToEnd(unittest.TestCase):
                     "w1": {"ip": "192.0.2.11"},
                     "w2": {"ip": "192.0.2.12"},
                     "w3": {"ip": "192.0.2.13", "admin": False},
-                    "u1": {"ip": "192.0.2.31", "os": "Ubuntu 24.04 LTS"},
+                    "u1": {"ip": "192.0.2.31", "os": "Arch Linux"},
                 },
                 "labels": {"cp1": {"node-role.kubernetes.io/control-plane": ""}},
                 "secrets": {},

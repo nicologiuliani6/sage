@@ -105,6 +105,11 @@ test_no_remove_if_protected_by_config if act(with_pkg(removable, {"name": "opens
 
 test_kernel_never_removed if act(with_pkg(removable, {"name": "kernel-modules-extra"})) == "update"
 
+test_debian_kernel_never_removed if {
+	act(with_pkg(removable, {"name": "linux-image-6.1.0-26-amd64"})) == "update"
+	act(with_pkg(removable, {"name": "linux-modules-6.8.0-45-generic"})) == "update"
+}
+
 # --- mitigazione
 
 mitigable := object.union(base, {
@@ -166,6 +171,12 @@ boot_with(applicability) := object.union(
 )
 
 test_boot_package_never_not_affected_for_non_use if act(boot_with(unused)) == "update"
+
+test_boot_packages_of_other_distros if {
+	every name in ["grub-efi-amd64-signed", "shim-signed", "initramfs-tools", "intel-microcode", "ucode-intel", "firmware-misc-nonfree", "kernel-firmware-intel"] {
+		act(with_pkg(boot_with(unused), {"name": name})) == "update"
+	}
+}
 
 test_userland_package_can_be_not_affected_for_non_use if {
 	act(with_pkg(boot_with(unused), {"name": "cockpit-ws"})) == "not_affected"

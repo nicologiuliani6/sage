@@ -62,11 +62,30 @@ def in_use(ctx: dict[str, Any]) -> bool:
 
 
 # Pacchetti della catena di avvio: eseguiti all'avvio, mai "inutilizzati" dai processi.
-BOOT_PACKAGES = ("grub2*", "shim*", "dracut*", "microcode_ctl", "*-firmware*", "linux-firmware*")
+# Nomi delle famiglie RHEL, Debian/Ubuntu e SUSE (stessa lista in policy/decision.rego).
+BOOT_PACKAGES = (
+    "grub*",
+    "shim*",
+    "dracut*",
+    "initramfs-tools*",
+    "microcode_ctl",
+    "*-microcode",
+    "ucode-*",
+    "*-firmware*",
+    "firmware-*",
+    "linux-firmware*",
+)
+# Pacchetti del kernel: RHEL e SUSE "kernel*", Debian e Ubuntu "linux-image-*" e
+# "linux-modules-*" (stessa lista in policy/decision.rego).
+KERNEL_PREFIXES = ("kernel", "linux-image-", "linux-modules-")
 
 
 def is_boot_package(name: str) -> bool:
     return any(fnmatch.fnmatch(name, p) for p in BOOT_PACKAGES)
+
+
+def is_kernel_package(name: str) -> bool:
+    return name.startswith(KERNEL_PREFIXES)
 
 
 def verify(
@@ -80,7 +99,7 @@ def verify(
 ) -> Check:
     record = record or {}
     kind = cond.get("type")
-    is_kernel = package.startswith("kernel")
+    is_kernel = is_kernel_package(package)
     boot = is_boot_package(package)
 
     if kind == "kernel_module":
@@ -175,7 +194,7 @@ def mitigation_ok(
     """Si può bloccare il modulo senza rischi per il nodo?"""
     if not mitigation or mitigation.get("type") != "module_denylist":
         return False, "nessuna mitigazione proposta"
-    if not package.startswith("kernel"):
+    if not is_kernel_package(package):
         return False, "denylist di moduli solo per CVE del kernel"
     module = mitigation["module"]
     if any(fnmatch.fnmatch(module, p) for p in protected_modules):

@@ -44,6 +44,8 @@ config:
     min_interval_seconds: 0
     endpoints: []           # vuoto = solo regole deterministiche
   groups: []                # OBBLIGATORIO: almeno un gruppo di nodi
+  sources:
+    osv_url: https://api.osv.dev/v1   # Debian e Ubuntu: advisory e CVE (mirror interno ammesso)
   policy:
     protected_packages: []
     protected_modules: []

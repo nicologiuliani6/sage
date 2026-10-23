@@ -24,6 +24,7 @@ def extra_vars(node_name: str, control_plane: bool, plan: dict[str, Any], group)
         "sage_light": light,
         "sage_node_name": node_name,
         "sage_update_advisories": plan.get("update_advisories", []),
+        "sage_update_packages": plan.get("update_packages", []),
         "sage_remove_packages": plan.get("remove_packages", []),
         "sage_denylist_modules": plan.get("denylist_modules", []),
         "sage_drain_mode": group.drain,

@@ -98,6 +98,8 @@ class SourcesConfig:
     )
     epss_url: str = "https://api.first.org/data/v1/epss"
     cve_api_url: str = "https://cveawg.mitre.org/api/cve"
+    # Debian e Ubuntu: advisory e CVE degli aggiornamenti di sicurezza (ADR-0017).
+    osv_url: str = "https://api.osv.dev/v1"
     timeout_seconds: int = 30
 
 
@@ -380,7 +382,7 @@ def _parse_policy(raw: dict[str, Any], errors: list[str]) -> PolicyConfig:
 def _parse_sources(raw: dict[str, Any], errors: list[str]) -> SourcesConfig:
     defaults = SourcesConfig()
     values = {}
-    for key in ("kev_url", "epss_url", "cve_api_url"):
+    for key in ("kev_url", "epss_url", "cve_api_url", "osv_url"):
         value = raw.get(key, getattr(defaults, key))
         if not isinstance(value, str) or not value:
             errors.append(f"sources.{key}: stringa non vuota")

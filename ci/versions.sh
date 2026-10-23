@@ -14,3 +14,11 @@ HELM_VERSION=v4.3.0
 # distro recenti) e per provarlo. Indice multi-architettura, fissato per digest.
 ROCKY9_IMAGE=rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
 ROCKY8_IMAGE=rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6
+# Container in cui la CI prova il collector su ogni famiglia di distro (ci/distros.sh).
+# Versioni vecchie apposta: hanno aggiornamenti di sicurezza in sospeso.
+DEBIAN12_IMAGE=debian:12.1
+UBUNTU2404_IMAGE=ubuntu:noble-20240423
+UBUNTU2204_IMAGE=ubuntu:jammy-20230425
+LEAP156_IMAGE=opensuse/leap:15.6
+ALMA9_IMAGE=almalinux:9.3
+FEDORA_IMAGE=fedora:latest
