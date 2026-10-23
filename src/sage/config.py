@@ -111,6 +111,9 @@ class ControllerConfig:
     pause_minutes: int = 30
     # Ogni quanti secondi il controllore guarda lo stato dei Job.
     poll_seconds: int = 30
+    # Nodi controllati insieme. Pochi: il controllo legge dischi e pacchetti, e con
+    # storage condiviso (VM sullo stesso Ceph o SAN) troppi insieme rallentano etcd.
+    scan_parallel: int = 3
 
 
 @dataclass(frozen=True)
@@ -341,6 +344,7 @@ def _parse_controller(raw: Any, errors: list[str]) -> ControllerConfig:
     return ControllerConfig(
         pause_minutes=_int(raw, "pause_minutes", 30, where, errors, 0),
         poll_seconds=_int(raw, "poll_seconds", 30, where, errors, 5),
+        scan_parallel=_int(raw, "scan_parallel", 3, where, errors, 1),
     )
 
 

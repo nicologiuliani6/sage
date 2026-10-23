@@ -33,12 +33,14 @@ def collect(nodes: list[Node], cfg: Config, workdir: Path) -> dict[str, dict[str
         "-e",
         f"sage_out_dir={out_dir}",
     ]
-    log.info("raccolta da %d nodi", len(nodes))
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=paths.ansible_dir())
-    if proc.returncode != 0:
-        # Codice != 0 anche se un solo nodo non risponde: si prosegue con gli altri.
-        log.warning("ansible-playbook collect.yml terminato con codice %d", proc.returncode)
-        log.warning("%s", _tail(proc.stdout))
+    parallel = cfg.controller.scan_parallel
+    log.info("raccolta da %d nodi (%d alla volta)", len(nodes), parallel)
+    _run(cmd + ["--forks", str(parallel)])
+    # Un nodo che non ha risposto (lento, carico) si riprova una volta, da solo.
+    missing = [n.name for n in nodes if not (out_dir / f"{n.name}.json").is_file()]
+    if missing:
+        log.info("nuovo tentativo, uno alla volta, su: %s", ", ".join(missing))
+        _run(cmd + ["--forks", "1", "--limit", ",".join(missing)])
     reports = {}
     for node in nodes:
         path = out_dir / f"{node.name}.json"
@@ -50,6 +52,14 @@ def collect(nodes: list[Node], cfg: Config, workdir: Path) -> dict[str, dict[str
         except json.JSONDecodeError:
             log.warning("report di %s non valido: nodo escluso da questo giro", node.name)
     return reports
+
+
+def _run(cmd: list[str]) -> None:
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=paths.ansible_dir())
+    if proc.returncode != 0:
+        # Codice != 0 anche se un solo nodo non risponde: si prosegue con gli altri.
+        log.warning("ansible-playbook collect.yml terminato con codice %d", proc.returncode)
+        log.warning("%s", _tail(proc.stdout))
 
 
 def _tail(text: str, lines: int = 30) -> str:

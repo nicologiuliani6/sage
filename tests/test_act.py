@@ -94,3 +94,18 @@ def test_job_manifest():
         "values": ["worker01-a-very-long-node-name-from-kubespray-x"],
     }
     assert TEMPLATE["spec"]["template"]["spec"].get("affinity") is None  # template intatto
+
+
+def test_pending_reboot_joins_the_plan():
+    from sage.act import Plan, add_pending_reboots
+
+    cfg = base_config()
+    worker = cfg.group("worker")
+    manual = worker.__class__(**{**worker.__dict__, "kernel": "manual"})
+    plans = {"w1": Plan(), "w2": Plan(), "g1": Plan()}
+    reports = {n: {"reboot": {"required": n != "w2", "reasons": ["x"]}} for n in plans}
+    add_pending_reboots(plans, reports, {"w1": worker, "w2": worker, "g1": manual})
+    assert plans["w1"].reboot and not plans["w1"].empty
+    assert not plans["w2"].reboot and plans["w2"].empty
+    assert not plans["g1"].reboot and plans["g1"].deferred  # kernel solo a mano: a una persona
+    assert Plan.from_dict(plans["w1"].to_dict()).reboot is True

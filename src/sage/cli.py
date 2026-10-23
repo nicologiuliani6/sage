@@ -125,6 +125,7 @@ def full_scan(cfg: config.Config, kube, release: str, dry_run: bool) -> int:
 
     log.info("analisi completata, chiamate LLM: %d", chain.calls)
     plans = act.build_plans(analysis.decisions, groups)
+    act.add_pending_reboots(plans, reports, groups)
     messages: list[str] = []
     kube.write_json(f"{release}-state", state)
 

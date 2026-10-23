@@ -103,3 +103,29 @@ def test_light_mode_only_for_module_blocks():
     assert remediate.extra_vars("w1", False, {"denylist_modules": ["sctp"]}, group)["sage_light"]
     for plan in ({"update_advisories": ["RLSA-1"]}, {"remove_packages": ["cockpit-ws"]}):
         assert not remediate.extra_vars("w1", False, plan, group)["sage_light"]
+
+
+def test_collect_retries_missing_nodes_one_at_a_time(tmp_path, monkeypatch):
+    """Un nodo lento che non risponde al primo passaggio viene riprovato, da solo."""
+    import subprocess
+
+    from sage import collect
+    from sage.kube import Node
+
+    nodes = [Node(n, {}, "192.0.2.1", True, False) for n in ("n1", "n2")]
+    monkeypatch.setattr(collect, "write_inventory", lambda n, c, w: (tmp_path / "inv", []))
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        out = tmp_path / "reports"
+        names = ["n1"] if "--limit" not in cmd else cmd[cmd.index("--limit") + 1].split(",")
+        for name in names:
+            (out / f"{name}.json").write_text('{"packages": {}}')
+        return subprocess.CompletedProcess(cmd, 2 if "--limit" not in cmd else 0, "", "")
+
+    monkeypatch.setattr(collect.subprocess, "run", run)
+    reports = collect.collect(nodes, base_config(), tmp_path)
+    assert set(reports) == {"n1", "n2"}
+    assert calls[0][calls[0].index("--forks") + 1] == "3"
+    assert calls[1][-4:] == ["--forks", "1", "--limit", "n2"]

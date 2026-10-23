@@ -737,3 +737,40 @@ def test_suse_node(collector, monkeypatch, capsys):
     assert adv["id"] == "openSUSE-SLE-15.6-2026-101"
     assert adv["cves"] == ["CVE-2026-1111", "CVE-2026-2222"]
     assert adv["fixed_version"] == "4.23.5-150600.3.1"
+
+
+def test_low_priority_reexecs_once_with_ionice(collector, monkeypatch):
+    calls = []
+    monkeypatch.delenv("SAGE_LOW_PRIORITY", raising=False)
+    monkeypatch.setattr(collector.os, "nice", lambda n: calls.append(("nice", n)))
+    monkeypatch.setattr(collector.shutil, "which", lambda n: "/usr/bin/ionice")
+    monkeypatch.setattr(collector.os, "execv", lambda path, args: calls.append((path, args[:4])))
+    collector.low_priority()
+    assert calls[0] == ("nice", 19)
+    assert calls[1] == ("/usr/bin/ionice", ["/usr/bin/ionice", "-t", "-c", "3"])
+    calls.clear()
+    collector.low_priority()  # già rilanciato: niente secondo exec
+    assert calls == []
+
+
+def test_newest_kernel_differs(collector, tmp_path):
+    old, new = tmp_path / "vmlinuz-6.1.0-26-amd64", tmp_path / "vmlinuz-6.1.0-40-amd64"
+    rescue = tmp_path / "vmlinuz-0-rescue-abc"
+    for i, f in enumerate((old, new, rescue)):
+        f.write_text("")
+        collector.os.utime(f, (1000 + i, 1000 + i))
+    assert collector.newest_kernel_differs("6.1.0-26-amd64", str(tmp_path))
+    assert not collector.newest_kernel_differs("6.1.0-40-amd64", str(tmp_path))
+    assert not collector.newest_kernel_differs("6.1.0-26-amd64", str(tmp_path / "vuota"))
+
+
+def test_reboot_required_file(collector, monkeypatch):
+    files = {"/var/run/reboot-required.pkgs": "linux-image-6.1.0-40-amd64\nlibc6\n"}
+    monkeypatch.setattr(collector.os.path, "exists", lambda p: p == "/var/run/reboot-required")
+    monkeypatch.setattr(collector, "read_file", lambda p: files.get(p, ""))
+    monkeypatch.setattr(collector, "newest_kernel_differs", lambda r: False)
+    status = collector.reboot_status(collector.Apt(), "6.1.0-26-amd64")
+    assert status == {
+        "required": True,
+        "reasons": ["reboot-required: libc6, linux-image-6.1.0-40-amd64"],
+    }

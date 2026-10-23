@@ -30,10 +30,15 @@ class Plan:
     remove_packages: list[str] = field(default_factory=list)
     denylist_modules: list[str] = field(default_factory=list)
     deferred: list[dict[str, str]] = field(default_factory=list)
+    # Riavvio in sospeso: aggiornamenti già installati (es. da unattended-upgrades o a
+    # mano) che diventano attivi solo dopo un riavvio. SAGE lo fa con drain, come sempre.
+    reboot: bool = False
 
     @property
     def empty(self) -> bool:
-        return not (self.update_advisories or self.remove_packages or self.denylist_modules)
+        return not (
+            self.update_advisories or self.remove_packages or self.denylist_modules or self.reboot
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,7 +47,13 @@ class Plan:
             "remove_packages": self.remove_packages,
             "denylist_modules": self.denylist_modules,
             "deferred": self.deferred,
+            "reboot": self.reboot,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Plan:
+        lists = {k: list(data.get(k) or []) for k in cls().to_dict() if k != "reboot"}
+        return cls(**lists, reboot=bool(data.get("reboot")))
 
 
 def decision_from_dict(d: dict[str, Any]) -> PackageDecision:
@@ -86,6 +97,26 @@ def build_plans(
         plan.denylist_modules = sorted(set(plan.denylist_modules))
         plans[node] = plan
     return plans
+
+
+def add_pending_reboots(
+    plans: dict[str, Plan],
+    reports: dict[str, dict[str, Any]],
+    groups: dict[str, NodeGroup | None],
+) -> None:
+    """Nodi con un riavvio in sospeso (segnalato dal collector): il piano lo include.
+    Nei gruppi con il kernel solo a mano il riavvio resta a una persona."""
+    for node, plan in plans.items():
+        pending = (reports.get(node) or {}).get("reboot") or {}
+        if not pending.get("required"):
+            continue
+        group = groups.get(node)
+        if group is not None and group.kernel == "manual":
+            plan.deferred.append(
+                {"package": "riavvio", "reason": "riavvio in sospeso: kernel solo a mano"}
+            )
+            continue
+        plan.reboot = True
 
 
 def job_name(release: str, node: str, now: datetime) -> str:

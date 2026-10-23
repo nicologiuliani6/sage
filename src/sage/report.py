@@ -169,6 +169,8 @@ def plan_text(plan: dict[str, Any]) -> str:
         parts.append("rimuovere " + ", ".join(plan["remove_packages"]))
     if plan.get("denylist_modules"):
         parts.append("bloccare " + ", ".join(plan["denylist_modules"]))
+    if plan.get("reboot"):
+        parts.append("riavvio in sospeso")
     if plan.get("deferred"):
         parts.append(f"{len(plan['deferred'])} rimandati")
     return "; ".join(parts) or "nessuna azione"

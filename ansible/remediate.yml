@@ -23,6 +23,7 @@
 #   sage_health_urls         URL che devono rispondere 2xx dopo l'intervento
 #   sage_kube                false = nessun cordon/drain/controllo via API (emergenza)
 #   sage_light               true = solo blocchi di moduli: niente cordon, drain né riavvio
+#   sage_reboot_pending      true = riavvio in sospeso (aggiornamenti già installati)
 - name: Remediation SAGE
   hosts: all
   gather_facts: false
@@ -30,6 +31,7 @@
   vars:
     sage_kube: true
     sage_light: false
+    sage_reboot_pending: false
     # Il nodo va svuotato solo per aggiornamenti e rimozioni, e solo se c'è l'API.
     sage_disrupt: "{{ sage_kube | bool and not sage_light | bool }}"
     sage_update_advisories: []
@@ -230,7 +232,8 @@
           when: not sage_light | bool and sage_reboot | bool
           vars:
             sage_reboot: >-
-              {{ (sage_pm == 'dnf' and sage_restart_dnf.rc == 1)
+              {{ (sage_reboot_pending | bool)
+                 or (sage_pm == 'dnf' and sage_restart_dnf.rc == 1)
                  or (sage_pm == 'zypper' and sage_restart_zypper.rc != 0)
                  or (sage_pm == 'apt'
                      and (sage_snap_before.stdout_lines | difference(sage_snap_after.stdout_lines) | length > 0)) }}

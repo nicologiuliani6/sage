@@ -19,9 +19,14 @@ log = logging.getLogger(__name__)
 def extra_vars(node_name: str, control_plane: bool, plan: dict[str, Any], group) -> dict[str, Any]:
     # Solo blocchi di moduli: niente cordon, drain né riavvio. Un riavvio pendente per
     # altri motivi non deve partire senza aver prima svuotato il nodo.
-    light = not plan.get("update_advisories") and not plan.get("remove_packages")
+    light = (
+        not plan.get("update_advisories")
+        and not plan.get("remove_packages")
+        and not plan.get("reboot")
+    )
     return {
         "sage_light": light,
+        "sage_reboot_pending": bool(plan.get("reboot")),
         "sage_node_name": node_name,
         "sage_update_advisories": plan.get("update_advisories", []),
         "sage_update_packages": plan.get("update_packages", []),

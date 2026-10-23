@@ -189,6 +189,7 @@ def node_status(
             "packages": len(plan.get("update_packages") or []),
             "remove": plan.get("remove_packages") or [],
             "mitigate": plan.get("denylist_modules") or [],
+            "reboot": bool(plan.get("reboot")),
             "deferred": deferred,
         },
         "deadline": _iso(deadline),

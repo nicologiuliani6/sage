@@ -58,16 +58,32 @@ def _time(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def queue_order(cfg: Config, groups: dict[str, Any]) -> list[str]:
-    """Ordine del giro: gruppi per `order`, in ogni gruppo il canary per primo."""
-    result = []
+def queue_order(
+    cfg: Config, groups: dict[str, Any], control_plane: frozenset[str] = frozenset()
+) -> list[str]:
+    """Ordine del giro: gruppi per `order`, in ogni gruppo il canary per primo.
+
+    I gruppi con nodi del control plane vanno sempre in fondo, qualunque `order` abbiano:
+    un master si aggiorna solo quando il resto del cluster è già passato."""
+    workers, masters = [], []
     for group in cfg.groups:
         members = sorted(n for n, g in groups.items() if g is not None and g.name == group.name)
         if group.canary in members:
             members.remove(group.canary)
             members.insert(0, group.canary)
-        result += members
-    return result
+        (masters if any(m in control_plane for m in members) else workers).extend(members)
+    return workers + masters
+
+
+def plan_text(plan: act.Plan) -> str:
+    parts = [f"{len(plan.update_advisories)} advisory"] if plan.update_advisories else []
+    if plan.remove_packages:
+        parts.append(f"{len(plan.remove_packages)} da rimuovere")
+    if plan.denylist_modules:
+        parts.append(f"{len(plan.denylist_modules)} moduli da bloccare")
+    if plan.reboot:
+        parts.append("riavvio in sospeso")
+    return ", ".join(parts) or "niente"
 
 
 def same_plan(plan: dict[str, Any], previous: dict[str, Any] | None) -> bool:
@@ -75,6 +91,8 @@ def same_plan(plan: dict[str, Any], previous: dict[str, Any] | None) -> bool:
     if not previous:
         return False
     keys = ("update_advisories", "remove_packages", "denylist_modules")
+    if bool(plan.get("reboot")) != bool(previous.get("reboot")):
+        return False
     return all(sorted(plan.get(k) or []) == sorted(previous.get(k) or []) for k in keys)
 
 
@@ -201,8 +219,10 @@ class Controller:
 
     def _build_queue(self, doc: dict[str, Any], report: dict[str, Any], now: datetime) -> str:
         cycle = doc["cycle"]
-        groups, _ = assign_groups(self.kube.list_nodes(), self.cfg.groups)
-        cycle["queue"] = queue_order(self.cfg, groups)
+        nodes = self.kube.list_nodes()
+        groups, _ = assign_groups(nodes, self.cfg.groups)
+        masters = frozenset(n.name for n in nodes if n.control_plane)
+        cycle["queue"] = queue_order(self.cfg, groups, masters)
         cycle["phase"] = "remediate"
         cycle["scanned"] = _iso(now)
         self.again = True
@@ -270,7 +290,7 @@ class Controller:
             return self._skip(cycle, name, "saltato: non più nel cluster o senza gruppo", now)
         if plan_dict is None:
             return self._skip(cycle, name, "saltato: non raggiunto dal controllo", now)
-        plan = act.Plan(**{k: plan_dict.get(k) or [] for k in act.Plan().to_dict()})
+        plan = act.Plan.from_dict(plan_dict)
         if plan.empty:
             return self._skip(cycle, name, OUTCOME_NOTHING, now)
         if not node.ready or node.unschedulable:
@@ -285,9 +305,7 @@ class Controller:
         if group.requires_fallback and not self.chain.fallback_available(group.name):
             return self._skip(cycle, name, "saltato: nessuna riserva LLM fuori dal gruppo", now)
         if self.dry_run:
-            return self._skip(
-                cycle, name, f"{OUTCOME_SIMULATED}: {len(plan.update_advisories)} advisory", now
-            )
+            return self._skip(cycle, name, f"{OUTCOME_SIMULATED}: {plan_text(plan)}", now)
         template = self.kube.read_text(f"{self.release}-remediate-template", "job.yaml")
         if not template:
             return "modello del Job di remediation mancante: reinstalla SAGE"
