@@ -21,13 +21,18 @@ ACTION_LABEL = {
 
 
 def purl(name: str, installed: str, report: dict[str, Any]) -> str:
-    """pkg:rpm/<distro>/<nome>@<versione>?arch=...&distro=..."""
-    os_info = report.get("node", {}).get("os", {})
-    distro = (os_info.get("name") or "linux").split()[0].lower()
-    version = installed.split(":", 1)[-1]
-    arch = report.get("node", {}).get("arch") or "noarch"
+    """pkg:rpm/<distro>/<nome>@<versione>?arch=...&distro=... (pkg:deb per Debian e Ubuntu)."""
+    node = report.get("node", {})
+    os_info = node.get("os", {})
+    distro = os_info.get("id") or (os_info.get("name") or "linux").split()[0].lower()
+    kind = "deb" if node.get("package_manager") == "apt" else "rpm"
+    # rpm: l'epoca va nel qualificatore, non nella versione; deb: fa parte della versione.
+    version = installed.split(":", 1)[-1] if kind == "rpm" else installed
+    arch = node.get("arch") or "noarch"
+    if kind == "deb":
+        arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(arch, arch)
     distro_version = f"{distro}-{os_info.get('version', '')}"
-    return f"pkg:rpm/{distro}/{name}@{version}?arch={arch}&distro={distro_version}"
+    return f"pkg:{kind}/{distro}/{name}@{version}?arch={arch}&distro={distro_version}"
 
 
 def openvex(

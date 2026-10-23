@@ -19,3 +19,5 @@ uv run --no-project --python 3.9 python -c \
   "import ast; ast.parse(open('ansible/files/collect_node.py').read())"
 checked uv run --no-project --python 3.9 python -m unittest -v tests.test_installer
 uv run sage check-config --config examples/config.example.yaml
+# Il collector sui gestori di pacchetti veri, in container delle distro (ADR-0017).
+bash ci/distros.sh

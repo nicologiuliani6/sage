@@ -32,3 +32,22 @@ def test_profile_warnings():
 
 def test_no_profile():
     assert profile_lines({}) == []
+
+
+def test_purl_per_distro():
+    from sage.report import purl
+
+    rocky = {"node": {"os": {"id": "rocky", "version": "9.4"}, "arch": "x86_64"}}
+    assert purl("openssl", "1:3.0.7-27.el9", rocky) == (
+        "pkg:rpm/rocky/openssl@3.0.7-27.el9?arch=x86_64&distro=rocky-9.4"
+    )
+    debian = {
+        "node": {
+            "os": {"id": "debian", "version": "12"},
+            "arch": "x86_64",
+            "package_manager": "apt",
+        }
+    }
+    assert purl("openssh-server", "1:9.2p1-2", debian) == (
+        "pkg:deb/debian/openssh-server@1:9.2p1-2?arch=amd64&distro=debian-12"
+    )

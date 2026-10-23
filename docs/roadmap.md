@@ -13,6 +13,8 @@
       scadenza per le CVE gravi ([ADR-0015](adr/0015-controllore-in-loop.md))
 - [x] Installer interattivo come eseguibile unico, con storico delle modifiche
       ([ADR-0011](adr/0011-installer-interattivo.md), [ADR-0016](adr/0016-installer-eseguibile-unico.md))
+- [x] Più distribuzioni: famiglia RHEL (dnf), SUSE (zypper), Debian e Ubuntu (apt con OSV)
+      ([ADR-0017](adr/0017-piu-distribuzioni.md))
 - [x] Dashboard web di sola lettura, aggiornata in tempo reale
       ([ADR-0014](adr/0014-dashboard-sola-lettura.md))
 
@@ -34,5 +36,6 @@
 - [ ] Stabilità delle risposte del modello
 
 ### Estensioni
-- [ ] Altre distribuzioni (Debian, Ubuntu, SUSE): un driver per famiglia di pacchetti
+- [ ] Prova end-to-end della remediation su un nodo Debian/Ubuntu e SUSE reale
+- [ ] Amazon Linux 2023 (`releasever=latest`), Alpine, Arch
 - [ ] Dashboard: azioni operative (spegni, giro, riprendi) con login tramite token Kubernetes

@@ -14,3 +14,11 @@ HELM_VERSION=v4.3.0
 # distro recenti) e per provarlo. Indice multi-architettura, fissato per digest.
 ROCKY9_IMAGE=rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
 ROCKY8_IMAGE=rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6
+# Container in cui la CI prova il collector su ogni famiglia di distro (ci/distros.sh).
+# Versioni vecchie apposta: hanno aggiornamenti di sicurezza in sospeso.
+DEBIAN12_IMAGE=debian:12.1@sha256:eaace54a93d7b69c7c52bb8ddf9b3fcba0c106a497bc1fdbb89a6299cf945c63
+UBUNTU2404_IMAGE=ubuntu:noble-20240423@sha256:562456a05a0dbd62a671c1854868862a4687bf979a96d48ae8e766642cd911e8
+UBUNTU2204_IMAGE=ubuntu:jammy-20230425@sha256:dfd64a3b4296d8c9b62aa3309984f8620b98d87e47492599ee20739e8eb54fbf
+LEAP156_IMAGE=opensuse/leap:15.6@sha256:79be7751205ea84559990fb76b1bec71e38d6fad41c70a4f6c921b803b58f421
+ALMA9_IMAGE=almalinux:9.3@sha256:3f0cc7f99b0739908a8d6e4adec37ef47908991dc838dac43d52effe90fec747
+FEDORA_IMAGE=fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80

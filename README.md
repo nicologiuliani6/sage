@@ -17,6 +17,10 @@ Un LLM legge i **dati pubblici** della CVE e ne estrae le condizioni di sfruttab
 nodi. La decisione finale è di una policy OPA con garanzie fisse: nel dubbio si aggiorna, una CVE
 nel catalogo CISA KEV non è mai "non affetta".
 
+Funziona su nodi della famiglia RHEL (dnf), SUSE (zypper), Debian e Ubuntu (apt), anche
+mescolati nello stesso cluster: cambia solo il gestore di pacchetti, il resto è identico
+([ADR-0017](docs/adr/0017-piu-distribuzioni.md)).
+
 Un **controllore sempre acceso** fa il giro dei nodi: controllo completo, poi remediation un nodo
 alla volta (gruppi in ordine, canary per primo, master per ultimi, mai un nodo che modifica se
 stesso), rollback automatico in caso di errore, e da capo.

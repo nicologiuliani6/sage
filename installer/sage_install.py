@@ -56,21 +56,32 @@ GROUP_LABEL = "sage.io/group"
 MANAGED_BY = "sage-install"
 CONTROL_PLANE_LABELS = ("node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master")
 GPU_RESOURCE_PREFIXES = ("nvidia.com/gpu", "amd.com/gpu", "gpu.intel.com/")
-# La remediation usa dnf: per ora solo la famiglia RHEL.
-SUPPORTED_OS = re.compile(r"rocky|red hat|rhel|almalinux|centos stream|oracle linux|fedora", re.I)
+# Famiglie supportate (ADR-0017): RHEL (dnf), SUSE (zypper), Debian e Ubuntu (apt).
+SUPPORTED_OS = re.compile(
+    r"rocky|red hat|rhel|almalinux|centos stream|oracle linux|fedora|amazon linux"
+    r"|suse|sles|debian|ubuntu",
+    re.I,
+)
 NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 # Unit systemd o pacchetto (stessa regola della configurazione di SAGE).
 SERVICE_RE = re.compile(r"^[A-Za-z0-9@._:+-]{1,128}$")
 DEFAULT_POLICY = {
     "protected_packages": [
         "kernel*",
+        "linux-image-*",
         "glibc",
+        "libc6",
         "systemd",
         "dnf",
         "rpm",
+        "zypper",
+        "libzypp",
+        "apt",
+        "dpkg",
         "sudo",
         "openssh*",
         "NetworkManager",
+        "network-manager",
     ],
     "protected_modules": [
         "nf_*",
@@ -153,7 +164,7 @@ class NodeInfo:
         if not self.ip:
             return "senza InternalIP"
         if not SUPPORTED_OS.search(self.os_image):
-            return "OS non supportato, serve dnf"
+            return "OS non supportato (servono dnf, zypper o apt)"
         return None
 
     def label(self, width: int) -> str:
@@ -508,17 +519,19 @@ def remove_key_command(public_line: str) -> str:
     )
 
 
-# Cosa serve a SAGE su ogni nodo: sudo senza password, dnf, python3 >= 3.9 (collector).
+# Cosa serve a SAGE su ogni nodo: sudo senza password, un gestore di pacchetti supportato,
+# python3 >= 3.9 (collector e Ansible).
 CHECK_COMMAND = (
     'p=""; sudo -n true >/dev/null 2>&1 || p="$p sudo"; '
-    'command -v dnf >/dev/null 2>&1 || p="$p dnf"; '
+    "{ command -v dnf || command -v zypper || command -v apt-get; } >/dev/null 2>&1 "
+    '|| p="$p pm"; '
     "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' "
     '>/dev/null 2>&1 || p="$p python"; echo "SAGE-CHECK:$p"'
 )
 CHECK_MESSAGES = {
     "sudo": "sudo senza password non disponibile",
-    "dnf": "dnf assente",
-    "python": "manca python3 >= 3.9",
+    "pm": "nessun gestore di pacchetti supportato (dnf, zypper, apt)",
+    "python": "manca python3 >= 3.9 (es. RHEL 8 e SLES 15 hanno il 3.6)",
 }
 
 
@@ -1876,8 +1889,8 @@ class Installer:
             disabled,
             help=(
                 "Elenco letto da Kubernetes. I nodi non spuntati non vengono mai toccati. "
-                "Quelli con un sistema operativo non supportato (serve dnf) non sono "
-                "selezionabili."
+                "Quelli con un sistema operativo non supportato (servono dnf, zypper o "
+                "apt) non sono selezionabili."
             ),
         )
         selected = [nodes[i] for i in sorted(chosen)]
@@ -2256,7 +2269,7 @@ class Installer:
                     failed[n.name] = problem
                     ui.warn(f"{n.name}: {problem}")
                 else:
-                    ui.ok(f"{n.name}: chiave installata, sudo, dnf e python3 presenti")
+                    ui.ok(f"{n.name}: chiave, sudo, gestore di pacchetti e python3 a posto")
             if not failed:
                 break
             options = ["Riprova", "Escludi questi nodi e continua", "Interrompi"]

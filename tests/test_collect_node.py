@@ -1,5 +1,6 @@
 """Test del collector con output di dnf/rpm sintetici (nessun dato reale)."""
 
+import fnmatch
 import importlib.util
 import json
 from pathlib import Path
@@ -217,6 +218,7 @@ def collector():
 
 def run_collector(collector, monkeypatch, capsys, argv=()):
     monkeypatch.setattr(collector, "run", fake_run)
+    monkeypatch.setattr(collector.shutil, "which", lambda n: "/usr/bin/dnf" if n == "dnf" else None)
     monkeypatch.setattr(collector, "read_file", lambda p: KERNEL_FILES.get(p, ""))
     monkeypatch.setattr(
         collector,
@@ -236,9 +238,11 @@ def report(collector, monkeypatch, capsys):
 
 
 def test_summary(report):
-    assert report["schema_version"] == 4
+    assert report["schema_version"] == 5
     assert report["summary"] == {"advisories": 5, "packages": 4, "cves": 3}
-    assert report["node"]["os"] == {"name": "Rocky Linux", "version": "9.4"}
+    assert report["node"]["os"]["name"] == "Rocky Linux"
+    assert report["node"]["os"]["version"] == "9.4"
+    assert report["node"]["package_manager"] == "dnf"
 
 
 def test_cves_only_from_cve_field(report):
@@ -412,7 +416,7 @@ def test_library_listed_under_lib64_is_loaded(collector, monkeypatch):
         "run",
         lambda cmd: "/lib64/libc.so.6\n/usr/sbin/ldconfig\n" if cmd[:2] == ["rpm", "-ql"] else "",
     )
-    ctx = collector.package_context("glibc", {}, {"/usr/lib64/libc.so.6"}, {})
+    ctx = collector.package_context(collector.Dnf(), "glibc", {}, {"/usr/lib64/libc.so.6"}, {})
     assert ctx["libraries_loaded"] == ["/usr/lib64/libc.so.6"]
     assert ctx["idle"] is False
 
@@ -422,6 +426,7 @@ def test_unreliable_process_scan_never_idle(collector, monkeypatch, capsys):
     monkeypatch.setattr(collector, "read_file", lambda p: KERNEL_FILES.get(p, ""))
     monkeypatch.setattr(collector, "running_state", lambda: ({}, set(), 0))
     monkeypatch.setattr(collector.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(collector.shutil, "which", lambda n: "/usr/bin/dnf" if n == "dnf" else None)
     collector.main([])
     report = json.loads(capsys.readouterr().out)
     assert report["profile"]["process_scan_ok"] is False
@@ -444,3 +449,291 @@ def test_unit_paths_order_and_templates(collector, monkeypatch):
     assert paths["chronyd.timer"] == []
     assert paths["getty@tty1.service"] == ["/usr/lib/systemd/system/getty@.service"]
     assert "other.service" not in paths  # non chiesta
+
+
+# ------------------------------------------------------------ apt (Debian, Ubuntu)
+
+# Righe reali di `apt-get -s dist-upgrade` (Debian 12, Ubuntu 24.04), con dati finti.
+APT_SIMULATION = """\
+NOTE: This is only a simulation!
+Inst base-files [12.4+deb12u1] (12.4+deb12u15 Debian:12.15/oldstable [amd64])
+Inst libc6 [2.36-9+deb12u1] (2.36-9+deb12u14 Debian:12.15/oldstable [amd64])
+Inst perl-base [5.36.0-7] (5.36.0-7+deb12u4 Debian-Security:12/oldstable-security [amd64])
+Inst libssl3t64 [3.0.13-0ubuntu3] (3.0.13-0ubuntu3.4 Ubuntu:24.04/noble-updates, \
+Ubuntu:24.04/noble-security [amd64])
+Inst linux-image-6.1.0-40-amd64 (6.1.153-1 Debian-Security:12/oldstable-security [amd64])
+Conf libc6 (2.36-9+deb12u14 Debian:12.15/oldstable [amd64])
+"""
+
+DPKG_ROWS = "".join(
+    "\t".join(row) + "\n"
+    for row in [
+        [
+            "ii ",
+            "libc6",
+            "2.36-9+deb12u1",
+            "glibc",
+            "2.36-9+deb12u1",
+            "libgcc-s1, libc-bin (= 2.36)",
+            "",
+            "",
+        ],
+        [
+            "ii ",
+            "perl-base",
+            "5.36.0-7",
+            "perl",
+            "5.36.0-7",
+            "libc6 (>= 2.35), libcrypt1 (>= 1:4.1.0)",
+            "dpkg (>= 1.17.17)",
+            "perlapi-5.36.0",
+        ],
+        ["ii ", "base-files", "12.4+deb12u1", "", "", "", "", ""],
+        [
+            "ii ",
+            "openssh-server",
+            "1:9.2p1-2",
+            "openssh",
+            "1:9.2p1-2",
+            "libc6 (>= 2.36), perl-base | perl:any",
+            "",
+            "ssh-server",
+        ],
+        ["rc ", "removed-pkg", "1.0", "", "", "", "", ""],
+    ]
+)
+
+DPKG_LISTS = {
+    "/var/lib/dpkg/info/libc6:amd64.list": "/.\n/lib/x86_64-linux-gnu/libc.so.6\n",
+    "/var/lib/dpkg/info/perl-base.list": "/.\n/usr/bin/perl\n",
+    "/var/lib/dpkg/info/base-files.list": "/.\n/etc/debian_version\n",
+    "/var/lib/dpkg/info/openssh-server.list": (
+        "/.\n/usr/sbin/sshd\n/lib/systemd/system/ssh.service\n"
+    ),
+}
+
+DEBIAN_OS = (
+    'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\n'
+    'VERSION_ID="12"\nID=debian\n'
+)
+
+
+def test_parse_apt_simulation(collector):
+    found = collector.parse_apt_simulation(APT_SIMULATION)
+    assert found["perl-base"] == (
+        "5.36.0-7",
+        "5.36.0-7+deb12u4",
+        "Debian-Security:12/oldstable-security",
+        True,
+    )
+    # Correzione arrivata con un rilascio intermedio: tenuta, la decide OSV.
+    assert found["libc6"][3] is False
+    assert found["libssl3t64"][2] == "Ubuntu:24.04/noble-security"
+    assert "linux-image-6.1.0-40-amd64" not in found  # pacchetto nuovo, non aggiornamento
+
+
+def test_parse_dpkg_database(collector):
+    db = collector.parse_dpkg_database(DPKG_ROWS)
+    assert set(db) == {"libc6", "perl-base", "base-files", "openssh-server"}
+    assert db["libc6"]["source"] == "glibc"
+    assert db["base-files"]["source"] == "base-files"  # senza campo Source
+    assert db["perl-base"]["requires"] == {"libc6", "libcrypt1", "dpkg"}
+    assert db["openssh-server"]["requires"] == {"libc6", "perl-base", "perl"}
+    assert db["openssh-server"]["provides"] == {"openssh-server", "ssh-server"}
+
+
+def test_apt_ecosystem(collector):
+    assert collector.apt_ecosystem({"id": "debian", "version": "12", "lts": False}) == "Debian:12"
+    ubuntu = {"id": "ubuntu", "version": "24.04", "lts": True}
+    assert collector.apt_ecosystem(ubuntu) == "Ubuntu:24.04:LTS"
+    assert collector.apt_ecosystem({"id": "ubuntu", "version": "24.10", "lts": False}) == (
+        "Ubuntu:24.10"
+    )
+    assert collector.apt_ecosystem({"id": "linuxmint", "version": "22", "lts": False}) == ""
+
+
+@pytest.mark.parametrize(
+    "output, expected",
+    [
+        ("NOTE: simulation\nRemv telnet [0.17+2.4-2]\n", []),
+        ("Remv libfoo [1]\nRemv foo-tools [1]\n", ["foo-tools"]),
+        ("WARNING: The following essential packages will be removed.\nRemv libfoo [1]\n", None),
+        ("E: Unable to locate package libfoo\n", None),
+    ],
+)
+def test_parse_apt_remove_simulation(collector, output, expected):
+    name = "telnet" if "telnet" in output else "libfoo"
+    assert collector.parse_apt_remove_simulation(output, name) == expected
+
+
+def apt_run(cmd):
+    if cmd[0] == "dpkg-query":
+        return DPKG_ROWS
+    if cmd[:2] == ["apt-get", "update"]:
+        return ""
+    if cmd[:2] == ["apt-get", "-s"] and cmd[-1] == "dist-upgrade":
+        return APT_SIMULATION
+    if cmd[:2] == ["apt-get", "-s"] and "remove" in cmd:
+        return f"Remv {cmd[-1]} [1]\n"
+    return fake_run(cmd) if cmd[0] in ("systemctl", "ss", "modprobe") else ""
+
+
+def test_debian_node(collector, monkeypatch, capsys):
+    files = dict(KERNEL_FILES, **DPKG_LISTS)
+    files["/etc/os-release"] = DEBIAN_OS
+    monkeypatch.setattr(collector, "run", apt_run)
+    monkeypatch.setattr(collector, "read_file", lambda p: files.get(p, ""))
+    monkeypatch.setattr(
+        collector.glob,
+        "glob",
+        lambda pattern: sorted(p for p in DPKG_LISTS if fnmatch.fnmatch(p, pattern)),
+    )
+    monkeypatch.setattr(
+        collector,
+        "running_state",
+        lambda: ({"7": "/usr/bin/perl"}, {"/usr/lib/x86_64-linux-gnu/libc.so.6"}, 0),
+    )
+    monkeypatch.setattr(collector.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(collector, "privileged_from_disk", lambda files: [])
+    monkeypatch.setattr(
+        collector.shutil,
+        "which",
+        lambda n: f"/usr/bin/{n}" if n in ("apt-get", "dpkg-query") else None,
+    )
+    monkeypatch.setattr(collector, "_merged", [("/lib/", "/usr/lib/")])
+    collector.main([])
+    report = json.loads(capsys.readouterr().out)
+    assert report["node"]["package_manager"] == "apt"
+    assert report["node"]["os"]["id"] == "debian"
+    pkgs = report["packages"]
+    assert set(pkgs) == {"base-files", "libc6", "perl-base", "libssl3t64"}
+    perl = pkgs["perl-base"]
+    assert perl["advisories"][0]["lookup"] == {
+        "ecosystem": "Debian:12",
+        "source": "perl",
+        "installed": "5.36.0-7",
+        "fixed": "5.36.0-7+deb12u4",
+        "security": True,
+    }
+    assert perl["advisories"][0]["id"] == "oldstable-security:perl:5.36.0-7+deb12u4"
+    assert perl["context"]["binaries_running"] == ["/usr/bin/perl"]
+    assert perl["context"]["source"] == "perl"
+    assert perl["context"]["installed"] == ["5.36.0-7"]
+    # libc6 elencata in /lib, caricata da /usr/lib (usrmerge): in uso
+    assert pkgs["libc6"]["context"]["libraries_loaded"] == ["/usr/lib/x86_64-linux-gnu/libc.so.6"]
+    assert pkgs["libc6"]["context"]["required_by"] == ["openssh-server", "perl-base"]
+    assert report["profile"]["process_scan_ok"] is True
+
+
+# ------------------------------------------------------------ zypper (SUSE)
+
+# Formato reale di `zypper --xmlout list-patches` (openSUSE Leap 15.6), con dati finti.
+ZYPPER_PATCHES = """<?xml version='1.0'?>
+<stream>
+<message type="warning">Repository metadata expired</message>
+<update-status version="0.6">
+<update-list>
+<update kind="patch" name="openSUSE-SLE-15.6-2026-101" edition="1" arch="noarch"
+ status="needed" category="security" severity="important" pkgmanager="false"
+ restart="false" interactive="false"><summary>Security update for libexample</summary>
+<description>* CVE-2026-1111: overflow</description><license/>
+<issue-date time_t="1718004848" text="2026-06-10T07:34:08Z"/>
+<issue-list><issue type="bugzilla" id="1225690"><title>VUL-0</title></issue>
+<issue type="cve" id="CVE-2026-1111"><title>x</title></issue>
+<issue type="cve" id="CVE-2026-2222"><title>x</title></issue></issue-list></update>
+<update kind="patch" name="openSUSE-2026-7" edition="1" arch="noarch" status="needed"
+ category="recommended" severity="low"><summary>Recommended</summary></update>
+<update kind="patch" name="openSUSE-2026-8" edition="1" arch="noarch" status="not-needed"
+ category="security" severity="low"><summary>Già applicata</summary></update>
+</update-list>
+</update-status>
+</stream>
+"""
+
+ZYPPER_PATCH_INFO = """\
+Name        : openSUSE-SLE-15.6-2026-101
+Status      : needed
+Category    : security
+Provides    : patch:openSUSE-SLE-15.6-2026-101 = 1
+Conflicts   : [5]
+    srcpackage:libexample < 4.23.5-150600.3.1
+    libexample.x86_64 < 4.23.5-150600.3.1
+    libexample.noarch < 4.23.5-150600.3.1
+    libexample-devel.x86_64 < 4.23.5-150600.3.1
+    libexample-lang < 4.23.5-150600.3.1
+"""
+
+
+def test_parse_zypper_patches(collector):
+    patches = collector.parse_zypper_patches(ZYPPER_PATCHES)
+    assert patches == {
+        "openSUSE-SLE-15.6-2026-101": {
+            "severity": "Important",
+            "cves": ["CVE-2026-1111", "CVE-2026-2222"],
+            "issued": "2026-06-10T07:34:08Z",
+        }
+    }
+    assert collector.parse_zypper_patches("non xml") == {}
+
+
+def test_parse_zypper_patch_info(collector):
+    assert collector.parse_zypper_patch_info(ZYPPER_PATCH_INFO) == {
+        "libexample": "4.23.5-150600.3.1",
+        "libexample-devel": "4.23.5-150600.3.1",
+        "libexample-lang": "4.23.5-150600.3.1",
+    }
+
+
+@pytest.mark.parametrize(
+    "output, expected",
+    [
+        (
+            "Reading installed packages...\nResolving package dependencies...\n\n"
+            "The following 2 packages are going to be REMOVED:\n  libexample libexample-tools\n\n"
+            "2 packages to remove.\n",
+            ["libexample-tools"],
+        ),
+        (
+            "The following package is going to be REMOVED:\n  libexample\n\n1 package to remove.\n",
+            [],
+        ),
+        ("Problem: 1: This request will break your system!\n conflicting requests\n", None),
+        ("No provider of 'libexample' found.\nNothing to do.\n", None),
+    ],
+)
+def test_parse_zypper_remove_simulation(collector, output, expected):
+    assert collector.parse_zypper_remove_simulation(output, "libexample") == expected
+
+
+def test_suse_node(collector, monkeypatch, capsys):
+    def zypper_run(cmd):
+        if cmd[:2] == ["zypper", "-n"] and "list-patches" in cmd:
+            return ZYPPER_PATCHES
+        if cmd[:2] == ["zypper", "-n"] and "info" in cmd:
+            return ZYPPER_PATCH_INFO
+        if cmd[0] == "zypper":
+            return ""
+        if cmd[:2] == ["rpm", "-qa"] and cmd[3] == "%{NAME}\\n":
+            return "libexample\nlibexample-lang\nglibc\n"
+        if cmd[:2] == ["rpm", "-ql"]:
+            return "/usr/lib64/libexample.so.2\n"
+        return fake_run(cmd)
+
+    files = dict(KERNEL_FILES)
+    files["/etc/os-release"] = 'NAME="openSUSE Leap"\nVERSION_ID="15.6"\nID="opensuse-leap"\n'
+    monkeypatch.setattr(collector, "run", zypper_run)
+    monkeypatch.setattr(collector, "read_file", lambda p: files.get(p, ""))
+    monkeypatch.setattr(collector, "running_state", lambda: ({}, {"/usr/lib64/libc.so.6"}, 0))
+    monkeypatch.setattr(collector.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(
+        collector.shutil, "which", lambda n: "/usr/bin/zypper" if n == "zypper" else None
+    )
+    collector.main([])
+    report = json.loads(capsys.readouterr().out)
+    assert report["node"]["package_manager"] == "zypper"
+    # solo i pacchetti installati, con le CVE della patch
+    assert set(report["packages"]) == {"libexample", "libexample-lang"}
+    adv = report["packages"]["libexample"]["advisories"][0]
+    assert adv["id"] == "openSUSE-SLE-15.6-2026-101"
+    assert adv["cves"] == ["CVE-2026-1111", "CVE-2026-2222"]
+    assert adv["fixed_version"] == "4.23.5-150600.3.1"

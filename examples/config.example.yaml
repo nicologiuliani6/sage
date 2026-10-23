@@ -71,21 +71,33 @@ groups:                                  # i nodi fuori da ogni gruppo non vengo
     order: 4
     kernel: auto
 
+sources:                                 # fonti pubbliche (questi sono i valori predefiniti)
+  # Debian e Ubuntu: advisory (DSA, DLA, USN) e CVE degli aggiornamenti di sicurezza.
+  # Riceve solo nome e versione dei pacchetti sorgente; può essere un mirror interno.
+  osv_url: https://api.osv.dev/v1
+
 policy:
   # "Inutilizzato" (base per "non affetto" e rimozione) solo se nessun processo usa il pacchetto
   # da almeno tanti controlli consecutivi E da almeno tanti giorni.
   idle_scans_required: 3
   idle_days_required: 7
   urgent_deadline_hours: 6               # CVE gravi (KEV, sfruttate): da sistemare entro queste ore
-  protected_packages:                    # mai rimossi
+  protected_packages:                    # mai rimossi (nomi di RHEL, SUSE e Debian/Ubuntu)
     - "kernel*"
+    - "linux-image-*"
     - glibc
+    - libc6
     - systemd
     - dnf
     - rpm
+    - zypper
+    - libzypp
+    - apt
+    - dpkg
     - sudo
     - "openssh*"
     - NetworkManager
+    - network-manager
   protected_modules:                     # mai bloccati (servono a Kubernetes e alla rete)
     - "nf_*"
     - "ip_*"

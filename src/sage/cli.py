@@ -57,7 +57,7 @@ def track_urgent(analysis, previous: dict, now: datetime) -> dict:
 
 
 def full_scan(cfg: config.Config, kube, release: str, dry_run: bool) -> int:
-    from sage import act, opa, paths, report, sources
+    from sage import act, opa, osv, paths, report, sources
     from sage.analyze import Analyzer
     from sage.collect import collect
     from sage.inventory import assign_groups
@@ -77,6 +77,8 @@ def full_scan(cfg: config.Config, kube, release: str, dry_run: bool) -> int:
         for n in targets
         if n.name not in reports
     ]
+
+    osv.enrich(reports, cfg.sources)  # Debian e Ubuntu: advisory e CVE (ADR-0017)
 
     state = kube.read_json(f"{release}-state") or {}
     state["last_scan"] = now.isoformat()
