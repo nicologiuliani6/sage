@@ -35,6 +35,13 @@ sistema uno dopo l'altro e, finito il giro, ricomincia.
   Chi non lo tiene aspetta; chi lo perde esce e viene riavviato. La strategia Recreate evita
   due copie durante un aggiornamento. Allo spegnimento (SIGTERM) il controllore finisce il
   passo in corso e libera il Lease, così la copia nuova parte subito.
+- **Control plane stabile prima di intervenire** (aggiornamento del 2026-10-23): prima di ogni
+  nodo il controllore legge `/readyz` dell'apiserver (etcd compreso) e controlla che i master
+  siano Ready. Parte solo se è tutto sano di fila da `control_plane_stable_seconds` (60 s;
+  tre volte tanto prima di un master). Altrimenti il nodo resta in coda e la dashboard
+  mostra "in attesa". Vale per qualsiasi cluster: con etcd su dischi lenti, o un master
+  appena riavviato, un drain iniziato nel momento sbagliato si blocca a metà e lascia il
+  nodo in cordon. In simulazione non si aspetta.
 - **Niente attese inutili**: i passi che non lanciano niente (coda pronta, nodo senza niente da
   fare o saltato, remediation appena riuscita) si fanno di fila; si aspetta `poll_seconds`
   solo quando c'è un Job in corso o la pausa.

@@ -298,6 +298,8 @@ def controller_status(
         text = "in avvio"
     elif phase == "scan":
         text = "controllo completo in corso"
+    elif phase == "remediate" and doc.get("waiting") and not running:
+        text = f"in attesa: {doc['waiting']}"
     elif phase == "remediate":
         text = f"remediation su {running}" if running else "sceglie il prossimo nodo"
     else:

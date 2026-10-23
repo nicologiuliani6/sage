@@ -114,6 +114,10 @@ class ControllerConfig:
     # Nodi controllati insieme. Pochi: il controllo legge dischi e pacchetti, e con
     # storage condiviso (VM sullo stesso Ceph o SAN) troppi insieme rallentano etcd.
     scan_parallel: int = 3
+    # Prima di intervenire su un nodo l'API deve essere sana di fila per tanti secondi
+    # (tre volte tanto prima di un master): con un control plane instabile si aspetta
+    # invece di iniziare un drain che può bloccarsi a metà.
+    control_plane_stable_seconds: int = 60
 
 
 @dataclass(frozen=True)
@@ -345,6 +349,9 @@ def _parse_controller(raw: Any, errors: list[str]) -> ControllerConfig:
         pause_minutes=_int(raw, "pause_minutes", 30, where, errors, 0),
         poll_seconds=_int(raw, "poll_seconds", 30, where, errors, 5),
         scan_parallel=_int(raw, "scan_parallel", 3, where, errors, 1),
+        control_plane_stable_seconds=_int(
+            raw, "control_plane_stable_seconds", 60, where, errors, 0
+        ),
     )
 
 
