@@ -62,6 +62,11 @@ containers:
         valueFrom:
           fieldRef:
             fieldPath: metadata.namespace
+      {{- if $root.Values.caBundle.configMap }}
+      # CA per l'HTTPS verso l'esterno (es. CA aziendale di un proxy che ispeziona TLS).
+      - name: SSL_CERT_FILE
+        value: /etc/sage/ca/ca.crt
+      {{- end }}
       {{- with $root.Values.extraEnv }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
@@ -90,6 +95,11 @@ containers:
         mountPath: /etc/sage/ssh
         readOnly: true
       {{- end }}
+      {{- if $root.Values.caBundle.configMap }}
+      - name: ca
+        mountPath: /etc/sage/ca
+        readOnly: true
+      {{- end }}
       - name: tmp
         mountPath: /tmp
 volumes:
@@ -103,6 +113,11 @@ volumes:
       # Leggibile dal gruppo (fsGroup): sage copia la chiave in /tmp con permessi
       # 0600 prima di usarla, come richiede OpenSSH.
       defaultMode: 0440
+  {{- end }}
+  {{- if $root.Values.caBundle.configMap }}
+  - name: ca
+    configMap:
+      name: {{ $root.Values.caBundle.configMap }}
   {{- end }}
   - name: tmp
     emptyDir: {}

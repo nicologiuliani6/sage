@@ -52,6 +52,11 @@ config:
     idle_scans_required: 3  # "inutilizzato" solo dopo tanti controlli consecutivi...
     idle_days_required: 7   # ...e tanti giorni
 
+# CA per l'HTTPS verso l'esterno (KEV, EPSS, OSV, LLM): ConfigMap con la chiave ca.crt.
+# Serve dietro un proxy che ispeziona TLS. L'installer ci copia le CA del master.
+caBundle:
+  configMap: ""
+
 resources:
   requests:
     cpu: 100m

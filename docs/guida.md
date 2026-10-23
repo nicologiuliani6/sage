@@ -32,7 +32,9 @@ attivamente) hanno una scadenza (6 ore per default) visibile nella dashboard.
   con un utente che ha sudo senza password. Helm non serve: se manca, l'installer lo scarica
   con il checksum fissato nella release.
 - I pod devono raggiungere Internet (direttamente o con un proxy HTTP) per il catalogo CISA KEV,
-  EPSS, i record CVE e l'endpoint LLM.
+  EPSS, i record CVE, OSV (nodi Debian e Ubuntu) e l'endpoint LLM. Con un proxy che ispeziona
+  TLS (CA aziendale) non serve fare niente: l'installer usa le CA del master e le copia nel
+  cluster (ConfigMap `<release>-ca`), così anche i pod di SAGE le riconoscono.
 - Un endpoint LLM compatibile OpenAI con la sua chiave (per esempio un servizio gestito o un
   server vLLM interno). Senza LLM SAGE funziona solo con regole deterministiche e non dichiara
   mai "non affetto".
