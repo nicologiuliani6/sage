@@ -1229,6 +1229,15 @@ class Command(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class HelmTime(unittest.TestCase):
+    def test_offset_respected(self):
+        """Un master con il fuso di Roma non deve sembrare "nel futuro"."""
+        rome = inst.helm_time("2026-10-23T15:05:12.123456789+02:00")
+        utc = inst.helm_time("2026-10-23T13:05:12Z")
+        self.assertEqual(rome, utc)
+        self.assertIsNone(inst.helm_time("ieri"))
+
+
 class ApiRetries(unittest.TestCase):
     """Errori di rete verso l'API (bilanciatore, apiserver sotto carico): si ritenta."""
 

@@ -1259,6 +1259,16 @@ class ScreenUI(LineUI):
 # ------------------------------------------------------------------ comandi esterni
 
 
+def helm_time(value: str) -> datetime.datetime | None:
+    """Ora di `helm history -o json` ("2026-10-23T15:05:12.123456789+02:00"), con il suo
+    fuso: i nanosecondi si tagliano, Python ne accetta al massimo sei cifre."""
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", value)
+    if not m:
+        return None
+    zone = "+00:00" if m.group(2) in (None, "Z") else m.group(2)
+    return datetime.datetime.fromisoformat(m.group(1) + zone)
+
+
 def transient_api_error(proc: subprocess.CompletedProcess) -> bool:
     text = (proc.stderr or "") + (proc.stdout or "")[-500:]
     return proc.returncode != 0 and any(e in text for e in TRANSIENT_API_ERRORS)
@@ -1945,8 +1955,9 @@ class Installer:
             return
         # Anche un aggiornamento in corso (un'altra persona, adesso) è pending-*: si tocca
         # solo se è più vecchio del timeout di helm in run().
-        started = datetime.datetime.strptime(history[-1]["updated"][:19], "%Y-%m-%dT%H:%M:%S")
-        if datetime.datetime.utcnow() - started < datetime.timedelta(seconds=600):
+        started = helm_time(history[-1].get("updated", ""))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if started is None or now - started < datetime.timedelta(seconds=600):
             raise Fail(
                 f"un aggiornamento della release {self.release} è in corso "
                 f"(revisione {history[-1]['revision']}): riprova tra qualche minuto"
