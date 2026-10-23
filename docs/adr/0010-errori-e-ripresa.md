@@ -17,6 +17,15 @@ torna Ready dopo il riavvio. Ripetere automaticamente può peggiorare la situazi
 - Si riprende solo con un'azione esplicita: la ConfigMap `<release>-resume` (letta e cancellata dal
   controllore al passo successivo) o il comando `sage resume`, che la crea. Il giro continua dal
   nodo dopo; quello fallito viene ritentato al giro successivo.
+- Un errore passeggero dell'API Kubernetes non è un errore della remediation. Su cluster con
+  etcd lento (VM su storage condiviso) o durante il riavvio di un master l'API dà EOF o
+  `etcdserver: request timed out` per decine di secondi. Per questo:
+  - cordon, drain e uncordon nel playbook riprovano (fino a due minuti per l'uncordon): un
+    uncordon fallito dopo un riavvio riuscito farebbe annullare un aggiornamento buono;
+  - un Job la cui creazione non è stata confermata e che non compare nell'elenco non ferma il
+    controllore: il nodo non è stato toccato e torna in coda;
+  - l'installer ripete `helm upgrade` dopo un errore passeggero, riportando prima la release
+    all'ultima revisione buona se era rimasta in `pending-*`.
 
 ## Conseguenze
 

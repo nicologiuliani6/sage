@@ -1,6 +1,8 @@
 from datetime import datetime
+from pathlib import Path
 
 import pytest
+import yaml
 
 from sage import config, remediate, report
 from sage.analyze import Analysis, CveResult, PackageDecision
@@ -129,3 +131,22 @@ def test_collect_retries_missing_nodes_one_at_a_time(tmp_path, monkeypatch):
     assert set(reports) == {"n1", "n2"}
     assert calls[0][calls[0].index("--forks") + 1] == "3"
     assert calls[1][-4:] == ["--forks", "1", "--limit", "n2"]
+
+
+def _tasks(items):
+    for t in items:
+        yield t
+        for key in ("block", "rescue", "always"):
+            yield from _tasks(t.get(key, []))
+
+
+def test_kube_calls_retry_on_api_errors():
+    """Cordon, drain e uncordon riprovano: un errore passeggero dell'API dopo un riavvio
+    riuscito farebbe annullare l'aggiornamento dal rescue."""
+
+    play = yaml.safe_load((Path(__file__).parents[1] / "ansible" / "remediate.yml").read_text())[0]
+    drains = [t for t in _tasks(play["tasks"]) if "kubernetes.core.k8s_drain" in t]
+    assert len(drains) == 4
+    for t in drains:
+        assert t["until"] == f"{t['register']} is succeeded", t["name"]
+        assert t["retries"] >= 3, t["name"]

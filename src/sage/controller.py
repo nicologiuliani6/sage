@@ -255,6 +255,16 @@ class Controller:
         started = _time(st.get("started"))
         if job is None and started and now - started < JOB_GRACE:
             return f"remediation di {node} appena avviata"
+        if job is not None:
+            st["created"] = True
+        elif not st.get("created"):
+            # La creazione non è stata confermata (API in timeout) e il Job non c'è: il nodo
+            # non è stato toccato, torna in coda invece di fermare tutto il cluster.
+            name = st["job"]
+            for key in ("status", "job", "started", "plan"):
+                st.pop(key, None)
+            self.again = True
+            return f"{node}: Job {name} mai creato, si riprova"
         if job is not None and job.active:
             return f"remediation in corso su {node} ({job.name})"
         if job is not None and job.succeeded:
@@ -325,6 +335,7 @@ class Controller:
         )
         self.save(doc)  # prima lo stato, poi il Job: al riavvio si sa cosa cercare
         self.kube.create_job(manifest)
+        st["created"] = True  # se create_job solleva, lo dice _check_running
         return f"remediation avviata su {name} ({st['job']})"
 
     def _control_plane_unstable(

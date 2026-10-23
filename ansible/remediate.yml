@@ -113,6 +113,12 @@
             state: cordon
           delegate_to: localhost
           become: false
+          register: sage_kube_op
+          # Un errore passeggero dell'API (EOF, etcd lento, master che riparte) non deve far
+          # fallire il Job: dopo un riavvio riuscito il rescue annullerebbe l'aggiornamento.
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
           when: sage_disrupt | bool
 
         - name: Drain
@@ -126,6 +132,12 @@
               wait_timeout: "{{ sage_drain_timeout | int }}"
           delegate_to: localhost
           become: false
+          register: sage_kube_op
+          # Un errore passeggero dell'API (EOF, etcd lento, master che riparte) non deve far
+          # fallire il Job: dopo un riavvio riuscito il rescue annullerebbe l'aggiornamento.
+          until: sage_kube_op is succeeded
+          retries: 3
+          delay: 10
           when: sage_disrupt | bool and sage_drain_mode == 'evict'
 
         - name: Attendi che il nodo si svuoti da solo (job lunghi)
@@ -295,6 +307,12 @@
             state: uncordon
           delegate_to: localhost
           become: false
+          register: sage_kube_op
+          # Un errore passeggero dell'API (EOF, etcd lento, master che riparte) non deve far
+          # fallire il Job: dopo un riavvio riuscito il rescue annullerebbe l'aggiornamento.
+          until: sage_kube_op is succeeded
+          retries: 12
+          delay: 10
           when: sage_disrupt | bool
 
         - name: Controlli di salute del gruppo
@@ -359,6 +377,12 @@
             state: uncordon
           delegate_to: localhost
           become: false
+          register: sage_kube_op
+          # Un errore passeggero dell'API (EOF, etcd lento, master che riparte) non deve far
+          # fallire il Job: dopo un riavvio riuscito il rescue annullerebbe l'aggiornamento.
+          until: sage_kube_op is succeeded
+          retries: 12
+          delay: 10
           when: sage_disrupt | bool and not sage_modified | bool
 
         - name: Annulla la transazione dnf di SAGE
