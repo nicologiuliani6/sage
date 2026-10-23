@@ -47,12 +47,15 @@ dnf -q updateinfo info --security 2>&1 | head -60
 dnf needs-restarting -r; echo "needs-restarting rc=$?"
 '
 
+# I log dei job non si possono scaricare da qui: l'output va in un'annotazione per distro
+# (leggibile dall'API check-runs), con i caratteri speciali codificati.
 run() {
-  local image=$1 script=$2
-  echo "::group::${image}"
-  echo "=== ${image} ==="
-  timeout 600 docker run --rm "$image" sh -c "$script" 2>&1 || echo "(uscito con $?)"
-  echo "::endgroup::"
+  local image=$1 script=$2 out
+  out=$(timeout 600 docker run --rm "$image" sh -c "$script" 2>&1 | tail -c 60000) || true
+  out=${out//'%'/'%25'}
+  out=${out//$'\r'/'%0D'}
+  out=${out//$'\n'/'%0A'}
+  echo "::notice title=${image}::${out}"
 }
 
 run debian:12.1 "$APT"
