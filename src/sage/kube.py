@@ -188,22 +188,24 @@ class Kube:
     def api_problems(self) -> list[str]:
         """Controlli di /readyz dell'apiserver che non passano (etcd compreso); [] se è
         sano. /readyz è leggibile da tutti (ClusterRole system:public-info-viewer)."""
+        api = self._client.ApiClient()
+        request = api.param_serialize(
+            method="GET",
+            resource_path="/readyz",
+            query_params=[("verbose", "true")],
+            auth_settings=["BearerToken"],
+        )
         try:
-            data, status, _ = self._client.ApiClient().call_api(
-                "/readyz",
-                "GET",
-                query_params=[("verbose", "true")],
-                auth_settings=["BearerToken"],
-                response_type="str",
-                _request_timeout=10,
-            )
-        except Exception as exc:  # noqa: BLE001 (connessione, timeout, 5xx)
-            # Con un controllo fallito l'apiserver risponde 500: il client solleva
-            # un'eccezione che ha comunque il corpo con l'elenco dei controlli.
-            body, status = getattr(exc, "body", None), getattr(exc, "status", None)
-            if not body:
-                return [f"API non raggiungibile ({type(exc).__name__})"]
-            data = body.decode() if isinstance(body, bytes) else body
+            # Con un controllo fallito l'apiserver risponde 500: call_api non solleva,
+            # lo stato e il corpo con l'elenco dei controlli arrivano comunque.
+            response = api.call_api(*request, _request_timeout=10)
+            response.read()
+        except (TypeError, AttributeError):
+            raise  # errore di SAGE (firma del client cambiata), non un'API giù
+        except Exception as exc:  # noqa: BLE001 (connessione, timeout)
+            return [f"API non raggiungibile ({type(exc).__name__})"]
+        status = response.status
+        data = response.data.decode(errors="replace") if response.data else ""
         failed = [
             line[3:].split(" ", 1)[0] for line in str(data).splitlines() if line.startswith("[-]")
         ]
