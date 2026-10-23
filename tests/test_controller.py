@@ -274,6 +274,30 @@ def test_scan_now_flag_ends_the_pause():
     assert "richiesto a mano" in ctl.step(T0 + timedelta(minutes=2))
 
 
+def test_steps_pass_idle_nodes_together():
+    """I nodi senza niente da fare passano nello stesso giro di poll, senza aspettare."""
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    scan = ctl.load()["cycle"]["scan_job"]
+    cluster.report({"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": PLAN}, T0)
+    cluster.finish(scan)
+    msgs = ctl.steps(T0)
+    # coda pronta e w1 avviato subito; si ferma perché c'è un Job da aspettare
+    assert msgs[0].startswith("giro 1: ordine") and "avviata su w1" in msgs[1]
+    assert len(msgs) == 2
+    cluster.finish(last_fix(cluster))
+    msgs = ctl.steps(T0)
+    assert msgs == [
+        "w1: remediation riuscita",
+        "w2: niente da fare",
+        "w3: niente da fare",
+        f"remediation avviata su m1 ({last_fix(cluster)})",
+    ]
+    cluster.finish(last_fix(cluster))
+    assert "giro completato" in ctl.steps(T0)[-1]
+
+
 def test_queue_order_canary_first():
     cfg = base_config()
     groups = {n: cfg.group("worker") for n in ("w3", "w1", "w2")} | {"m1": cfg.group("master")}

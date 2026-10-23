@@ -19,8 +19,9 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import signal
 import socket
-import time
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,9 @@ class Controller:
         self.dry_run = dry_run
         self.chain = chain or LlmChain(cfg.llm)
         self.doc_name = f"{release}-controller"
+        # True se l'ultimo passo non ha lanciato niente (nodo saltato, coda pronta):
+        # il passo dopo si può fare subito, senza aspettare poll_seconds.
+        self.again = False
 
     # ------------------------------------------------------------ stato
 
@@ -109,6 +113,7 @@ class Controller:
 
     def step(self, now: datetime) -> str:
         """Un passo del giro. Restituisce cosa ha fatto (per il log)."""
+        self.again = False
         doc = self.load()
         before = copy.deepcopy(doc)
         message = self._step(doc, now)
@@ -200,6 +205,7 @@ class Controller:
         cycle["queue"] = queue_order(self.cfg, groups)
         cycle["phase"] = "remediate"
         cycle["scanned"] = _iso(now)
+        self.again = True
         return f"giro {cycle['id']}: ordine {', '.join(cycle['queue']) or 'nessun nodo'}"
 
     # ------------------------------------------------------------ remediation
@@ -237,6 +243,7 @@ class Controller:
             # Solo un piano riuscito conta come "già applicato" (vedi same_plan).
             st["last_plan"] = st.get("plan")
             cycle["results"][node] = {"outcome": OUTCOME_DONE, "at": _iso(now)}
+            self.again = True  # il nodo dopo parte subito
             return f"{node}: remediation riuscita"
         why = "fallita" if job is not None else "scomparsa (Job cancellato?)"
         st["status"] = "failed"
@@ -248,6 +255,7 @@ class Controller:
 
     def _skip(self, cycle: dict[str, Any], node: str, outcome: str, now: datetime) -> str:
         cycle["results"][node] = {"outcome": outcome, "at": _iso(now)}
+        self.again = True
         return f"{node}: {outcome}"
 
     def _start_node(self, doc: dict[str, Any], name: str, now: datetime) -> str:
@@ -292,8 +300,7 @@ class Controller:
         )
         self.save(doc)  # prima lo stato, poi il Job: al riavvio si sa cosa cercare
         self.kube.create_job(manifest)
-        log.info("remediation avviata su %s (%s)", name, st["job"])
-        return f"remediation avviata su {name}"
+        return f"remediation avviata su {name} ({st['job']})"
 
     def _pause(self, doc: dict[str, Any], now: datetime, why: str) -> str:
         cycle = doc["cycle"]
@@ -302,6 +309,14 @@ class Controller:
         until = now + timedelta(minutes=self.cfg.controller.pause_minutes)
         cycle["pause_until"] = _iso(until)
         return f"giro {cycle['id']}: {why}; prossimo giro alle {_iso(until)}"
+
+    def steps(self, now: datetime, limit: int = 100) -> list[str]:
+        """Passi di fila finché non c'è da aspettare: i nodi senza niente da fare passano
+        tutti insieme invece che uno ogni poll_seconds."""
+        messages = [self.step(now)]
+        while self.again and len(messages) < limit:
+            messages.append(self.step(now))
+        return messages
 
     def _selector(self, role: str) -> str:
         return f"{act.ROLE_LABEL}={role},app.kubernetes.io/instance={self.release}"
@@ -317,35 +332,50 @@ def scan_manifest(template: dict[str, Any], release: str, now: datetime) -> dict
     return m
 
 
-def run(controller: Controller, now=None, sleep=time.sleep) -> None:  # pragma: no cover
-    """Loop infinito: lease, un passo, attesa. Un errore non ferma il loop."""
+def run(controller: Controller, now=None) -> None:  # pragma: no cover
+    """Loop infinito: lease, i passi, attesa. Un errore non ferma il loop.
+
+    Allo spegnimento (SIGTERM: aggiornamento, drain del nodo) finisce il passo in corso e
+    libera il Lease, così la copia nuova parte subito invece di aspettare che scada.
+    """
     now = now or (lambda: datetime.now().astimezone())
     holder = os.environ.get("HOSTNAME") or socket.gethostname()
     lease = f"{controller.release}-controller"
     poll = controller.cfg.controller.poll_seconds
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
     log.info("controllore %s avviato (%s)", holder, "simulazione" if controller.dry_run else "VIVO")
     leader = False
     last = ""
-    while True:
-        HEARTBEAT.touch()
-        try:
-            got = controller.kube.acquire_lease(lease, holder, LEASE_SECONDS)
-            if got is False and leader:
-                # Un altro controllore ha preso il lease: questa copia non deve più agire.
-                log.error("lease perso: esco, Kubernetes mi riavvia")
-                raise SystemExit(1)
-            leader = bool(got)
-            if not leader:
-                if last != "lease":
-                    log.info("un altro controllore è attivo: attendo")
-                    last = "lease"
-            else:
-                message = controller.step(now())
-                if message != last:
-                    log.info(message)
-                    last = message
-        except SystemExit:
-            raise
-        except Exception:  # noqa: BLE001 (API giù durante il riavvio di un master, ecc.)
-            log.exception("passo non riuscito, riprovo")
-        sleep(poll)
+    try:
+        while not stop.is_set():
+            HEARTBEAT.touch()
+            try:
+                got = controller.kube.acquire_lease(lease, holder, LEASE_SECONDS)
+                if got is False and leader:
+                    # Un altro controllore ha preso il lease: questa copia non deve più agire.
+                    leader = False
+                    log.error("lease perso: esco, Kubernetes mi riavvia")
+                    raise SystemExit(1)
+                leader = bool(got)
+                if not leader:
+                    if last != "lease":
+                        log.info("un altro controllore è attivo: attendo")
+                        last = "lease"
+                else:
+                    for message in controller.steps(now()):
+                        if message != last:
+                            log.info(message)
+                            last = message
+            except SystemExit:
+                raise
+            except Exception:  # noqa: BLE001 (API giù durante il riavvio di un master, ecc.)
+                log.exception("passo non riuscito, riprovo")
+            stop.wait(poll)
+    finally:
+        if leader:
+            try:
+                controller.kube.release_lease(lease, holder)
+                log.info("controllore fermato: lease liberato")
+            except Exception:  # noqa: BLE001
+                log.exception("lease non liberato: il prossimo controllore aspetta che scada")
