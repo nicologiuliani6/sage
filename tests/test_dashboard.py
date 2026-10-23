@@ -179,12 +179,17 @@ def test_cve_table_urgent_first():
 
 
 def test_problems_become_alarms():
-    halted = {**CONTROLLER, "halted": True, "halt_reason": "remediation fallita su w1"}
+    quarantine = {
+        **CONTROLLER,
+        "nodes": {"w1": {"failures": 2, "retry_after": "2099-01-01T00:00:00+00:00"}},
+        "groups": {"worker": {"retry_after": "2099-01-01T00:00:00+00:00", "reason": "canary"}},
+    }
     texts = [
         a["text"]
-        for a in status(report=None, controller=halted, config_error="file mancante")["alarms"]
+        for a in status(report=None, controller=quarantine, config_error="file mancante")["alarms"]
     ]
-    assert any("SAGE FERMO" in t for t in texts)
+    assert any("w1 in quarantena dopo 2" in t for t in texts)
+    assert any("gruppo worker fermo" in t for t in texts)
     assert any("nessun report" in t for t in texts)
     assert any("configurazione" in t for t in texts)
     dead = status(lease={**LEASE, "renew_time": "2026-10-22T15:00:00+00:00"})

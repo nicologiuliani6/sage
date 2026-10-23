@@ -16,7 +16,10 @@ Un **controllore sempre acceso** fa il giro dei nodi
    servizio da un Job che gira su un **altro** nodo;
 3. pausa (30 minuti per default), poi da capo.
 
-Un errore ferma tutto finché una persona non controlla. Le CVE gravi (KEV o sfruttate
+Un errore non ferma il cluster e non richiede una persona ([ADR-0019](adr/0019-quarantena-del-nodo.md)):
+il nodo fallito torna com'era e va in quarantena, cioè viene ritentato dopo un'attesa che
+raddoppia a ogni errore (1 ora, 2, 4... fino a 7 giorni). Se fallisce il canary, un master o il
+10% di un gruppo, quel gruppo si ferma per il giro e riprova da solo più tardi. Le CVE gravi (KEV o sfruttate
 attivamente) hanno una scadenza (6 ore per default) visibile nella dashboard.
 
 ## Requisiti
@@ -150,11 +153,11 @@ kubectl -n sage get configmap sage-report -o jsonpath='{.binaryData.data\.json\.
 - **Fermare tutto**: `sage`, *Spegni il controllore*. Per tornare a non toccare i nodi:
   *Torna alla simulazione*.
 - **Remediation fallita**: SAGE riporta i pacchetti alla versione di prima (dnf: annulla la
-  transazione; zypper e apt: reinstalla le versioni precedenti, se il repository le ha ancora)
-  e si ferma su tutto il cluster. Se il
-  nodo era stato modificato resta in cordon. Leggi il log (`sage --resume`), controlla il nodo,
-  `kubectl uncordon <nodo>` se serve, poi `kubectl -n sage create configmap sage-resume`: il
-  giro continua dal nodo successivo, quello fallito viene ritentato al giro dopo.
+  transazione; zypper e apt: reinstalla le versioni precedenti, se il repository le ha ancora).
+  Se il nodo dopo il rollback è Ready torna in servizio, altrimenti resta in cordon. In
+  entrambi i casi va in quarantena (allarme nella dashboard) e SAGE lo ritenta da solo; gli
+  altri nodi proseguono. Non serve intervenire: se vuoi ritentare subito,
+  `kubectl -n sage create configmap sage-resume` azzera quarantene e gruppi fermi.
 - **Controllore fermo** (allarme nella dashboard): `kubectl -n sage logs deploy/sage-controller`.
   Kubernetes lo riavvia da solo; riparte dal punto salvato.
 - **Nodo "saltato: advisory ancora presenti"**: dopo una remediation riuscita il controllo vede

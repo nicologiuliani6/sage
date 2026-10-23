@@ -121,6 +121,25 @@
           delay: 10
           when: sage_disrupt | bool
 
+        # Il segno dice che il cordon è di SAGE: solo questi nodi SAGE può riprendere
+        # (ADR-0019); un cordon messo da una persona non si tocca.
+        - name: Segna il cordon di SAGE
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: "true"
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_disrupt | bool
+
         - name: Drain
           kubernetes.core.k8s_drain:
             name: "{{ sage_node_name }}"
@@ -315,6 +334,23 @@
           delay: 10
           when: sage_disrupt | bool
 
+        - name: Togli il segno del cordon
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: null
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_disrupt | bool
+
         - name: Controlli di salute del gruppo
           ansible.builtin.uri:
             url: "{{ item }}"
@@ -385,6 +421,23 @@
           delay: 10
           when: sage_disrupt | bool and not sage_modified | bool
 
+        - name: Nulla era stato modificato - togli il segno del cordon
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: null
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_disrupt | bool and not sage_modified | bool
+
         - name: Annulla la transazione dnf di SAGE
           ansible.builtin.command: "dnf -y history undo {{ sage_tx_id }}"
           vars:
@@ -428,9 +481,64 @@
           loop: "{{ ['install', 'blacklist'] | product(sage_denylist_modules) | list }}"
           when: sage_modified | bool
 
+        # Rollback riuscito e nodo Ready: il nodo torna in servizio e SAGE lo ritenta più avanti
+        # (quarantena, ADR-0019). Altrimenti resta in cordon.
+        - name: Nodo sano dopo il rollback?
+          kubernetes.core.k8s_info:
+            kind: Node
+            name: "{{ sage_node_name }}"
+          register: sage_node_after
+          delegate_to: localhost
+          become: false
+          until: sage_node_after.resources | default([]) | length == 1
+          retries: 6
+          delay: 10
+          failed_when: false
+          when: sage_disrupt | bool and sage_modified | bool
+
+        - name: Esito del rollback
+          ansible.builtin.set_fact:
+            sage_back_in_service: >-
+              {{ sage_disrupt | bool and sage_modified | bool
+                 and (sage_undo is not defined or sage_undo.rc is not defined or sage_undo.rc == 0)
+                 and (sage_node_after.resources | default([]) | map(attribute='status.conditions')
+                      | first | default([]) | selectattr('type', 'equalto', 'Ready')
+                      | map(attribute='status') | first | default('False')) == 'True' }}
+
+        - name: Rollback riuscito - rimetti il nodo in servizio
+          kubernetes.core.k8s_drain:
+            name: "{{ sage_node_name }}"
+            state: uncordon
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 12
+          delay: 10
+          when: sage_back_in_service | bool
+
+        - name: Rollback riuscito - togli il segno del cordon
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: null
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_back_in_service | bool
+
         - name: Fallimento
           ansible.builtin.fail:
             msg: >-
-              {{ 'Remediation fallita dopo aver modificato il nodo: rollback eseguito, nodo lasciato in cordon per un controllo manuale.'
+              {{ 'Remediation fallita: rollback eseguito, nodo di nuovo in servizio.'
+                 if sage_back_in_service | default(false) | bool else
+                 'Remediation fallita dopo aver modificato il nodo: rollback eseguito, nodo lasciato in cordon (quarantena).'
                  if sage_modified | bool else
                  'Remediation fallita senza modificare il nodo: nodo rimesso in servizio.' }}

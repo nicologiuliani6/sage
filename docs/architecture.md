@@ -27,8 +27,9 @@ remediation            un nodo alla volta: gruppi in ordine (master per ultimi),
 sage remediate (Job, mai sul nodo bersaglio)
   remediate.yml: cordon → drain → dnf, zypper o apt / rimozione / blocco moduli → riavvio se serve
                  → nodo Ready → (master: apiserver, etcd) → uncordon → controlli di salute
-  errore → rollback (dnf: transazione; zypper e apt: versioni di prima), nodo in cordon,
-           tutto fermo fino a `<release>-resume`
+  errore → rollback (dnf: transazione; zypper e apt: versioni di prima), nodo in servizio
+           se Ready; quarantena con attesa crescente, gruppo fermo se cade il canary,
+           un master o il 10% (ADR-0019); gli altri gruppi proseguono
 ```
 
 ## Il ruolo dell'LLM

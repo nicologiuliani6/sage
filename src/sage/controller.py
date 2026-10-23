@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import os
 import signal
 import socket
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,11 @@ OUTCOME_DONE = "fatto"
 OUTCOME_NOTHING = "niente da fare"
 OUTCOME_SIMULATED = "simulato"
 OUTCOME_FAILED = "fallito"
+# Quarantena (ADR-0019): attesa prima di ritentare, raddoppia a ogni errore.
+QUARANTINE_FIRST = timedelta(hours=1)
+QUARANTINE_MAX = timedelta(days=7)
+# Un gruppo si ferma per il giro se fallisce il canary, un master o questa quota dei nodi.
+GROUP_FAILURE_RATIO = 0.1
 
 
 def _iso(value: datetime) -> str:
@@ -96,6 +102,11 @@ def same_plan(plan: dict[str, Any], previous: dict[str, Any] | None) -> bool:
     return all(sorted(plan.get(k) or []) == sorted(previous.get(k) or []) for k in keys)
 
 
+def backoff(failures: int) -> timedelta:
+    """1 ora, 2, 4... fino a 7 giorni."""
+    return min(QUARANTINE_FIRST * 2 ** min(failures - 1, 20), QUARANTINE_MAX)
+
+
 class Controller:
     def __init__(
         self,
@@ -122,6 +133,17 @@ class Controller:
         doc.setdefault("cycle", None)
         doc.setdefault("nodes", {})
         doc.setdefault("halted", False)
+        doc.setdefault("groups", {})
+        if doc["halted"]:
+            # Fermo globale delle versioni prima della 0.7 (ADR-0010): diventa quarantena del
+            # nodo fallito, gli altri proseguono (ADR-0019).
+            log.info("fermo della versione precedente convertito in quarantena")
+            doc["halted"] = False
+            doc.pop("halt_reason", None)
+            for st in doc["nodes"].values():
+                if st.get("status") == "failed" and not st.get("retry_after"):
+                    st["failures"] = st.get("failures", 0) + 1
+                    st["retry_after"] = _iso(datetime.now(UTC) + backoff(st["failures"]))
         return doc
 
     def save(self, doc: dict[str, Any]) -> None:
@@ -156,16 +178,20 @@ class Controller:
         return resumed or self._remediate(doc, now)
 
     def _resume(self, doc: dict[str, Any], now: datetime) -> str:
-        if not self.kube.pop_flag(f"{self.release}-resume") or not doc["halted"]:
+        """`<release>-resume`: azzera quarantene e gruppi fermi (intervento a mano, mai
+        necessario: le attese finiscono da sole)."""
+        if not self.kube.pop_flag(f"{self.release}-resume"):
             return ""
-        reason = doc.get("halt_reason")
-        doc["halted"] = False
-        doc.pop("halt_reason", None)
+        doc["groups"] = {}
         for st in doc["nodes"].values():
+            st.pop("retry_after", None)
+            st.pop("failures", None)
             if st.get("status") == "failed":
                 st["status"] = "idle"
-        log.info("ripresa su richiesta (era: %s)", reason)
-        return f"ripreso su richiesta (era: {reason})"
+        if doc["cycle"]:
+            doc["cycle"].pop("stopped_groups", None)
+        log.info("quarantene azzerate su richiesta")
+        return "quarantene azzerate su richiesta"
 
     # ------------------------------------------------------------ controllo completo
 
@@ -235,11 +261,6 @@ class Controller:
         running = [n for n, st in doc["nodes"].items() if st.get("status") == "running"]
         if running:
             return self._check_running(doc, running[0], now)
-        if doc["halted"]:
-            return (
-                f"FERMO: {doc.get('halt_reason')}. "
-                f"Controlla il nodo, poi crea la ConfigMap {self.release}-resume"
-            )
         pending = [n for n in cycle["queue"] if n not in cycle["results"]]
         if not pending:
             return self._pause(doc, now, "giro completato")
@@ -272,16 +293,57 @@ class Controller:
             st["last_success"] = job.completion_time or _iso(now)
             # Solo un piano riuscito conta come "già applicato" (vedi same_plan).
             st["last_plan"] = st.get("plan")
+            st.pop("failures", None)
+            st.pop("retry_after", None)
+            doc["groups"].pop(st.get("group"), None)
             cycle["results"][node] = {"outcome": OUTCOME_DONE, "at": _iso(now)}
             self.again = True  # il nodo dopo parte subito
             return f"{node}: remediation riuscita"
         why = "fallita" if job is not None else "scomparsa (Job cancellato?)"
+        return self._quarantine(doc, node, why, now)
+
+    def _quarantine(self, doc: dict[str, Any], node: str, why: str, now: datetime) -> str:
+        """Il nodo fallito aspetta (sempre di più a ogni errore), gli altri proseguono."""
+        st = doc["nodes"][node]
+        cycle = doc["cycle"]
         st["status"] = "failed"
-        doc["halted"] = True
-        doc["halt_reason"] = f"remediation {why} su {node} (job {st['job']})"
+        st["failures"] = st.get("failures", 0) + 1
+        until = now + backoff(st["failures"])
+        st["retry_after"] = _iso(until)
         cycle["results"][node] = {"outcome": OUTCOME_FAILED, "detail": why, "at": _iso(now)}
-        log.error("FERMO: %s", doc["halt_reason"])
-        return f"FERMO: {doc['halt_reason']}"
+        message = f"{node}: remediation {why} (job {st['job']}), in quarantena fino a {_iso(until)}"
+        stopped = self._group_breaker(doc, node, now)
+        if stopped:
+            message += f"; {stopped}"
+        log.error("%s", message)
+        self.again = True
+        return message
+
+    def _group_breaker(self, doc: dict[str, Any], node: str, now: datetime) -> str:
+        """Ferma il gruppo per il resto del giro se fallisce il canary (il primo del gruppo
+        nel giro), un master o almeno il 10% dei nodi del gruppo."""
+        cycle = doc["cycle"]
+        nodes = self.kube.list_nodes()
+        groups, _ = assign_groups(nodes, self.cfg.groups)
+        name = doc["nodes"][node].get("group") or (groups[node].name if node in groups else None)
+        if name is None:
+            return ""
+        members = [n for n in cycle["queue"] if n in groups and groups[n].name == name]
+        failed = [
+            n for n in members if cycle["results"].get(n, {}).get("outcome") == OUTCOME_FAILED
+        ]
+        master = any(n.name == node and n.control_plane for n in nodes)
+        canary = bool(members) and members[0] == node
+        limit = max(1, math.ceil(len(members) * GROUP_FAILURE_RATIO))
+        if not (master or canary or len(failed) >= limit):
+            return ""
+        gst = doc["groups"].setdefault(name, {})
+        gst["stops"] = gst.get("stops", 0) + 1
+        until = now + backoff(gst["stops"])
+        gst["retry_after"] = _iso(until)
+        gst["reason"] = f"{len(failed)} nodi falliti su {len(members)} (ultimo {node})"
+        cycle.setdefault("stopped_groups", []).append(name)
+        return f"gruppo {name} fermo fino a {_iso(until)}"
 
     def _skip(self, cycle: dict[str, Any], node: str, outcome: str, now: datetime) -> str:
         cycle["results"][node] = {"outcome": outcome, "at": _iso(now)}
@@ -303,7 +365,17 @@ class Controller:
         plan = act.Plan.from_dict(plan_dict)
         if plan.empty:
             return self._skip(cycle, name, OUTCOME_NOTHING, now)
-        if not node.ready or node.unschedulable:
+        gst = doc["groups"].get(group.name, {})
+        group_wait = _time(gst.get("retry_after"))
+        if group.name in cycle.get("stopped_groups", []) or (group_wait and now < group_wait):
+            why = f"saltato: gruppo {group.name} fermo fino a {gst.get('retry_after')}"
+            return self._skip(cycle, name, why, now)
+        retry = _time(doc["nodes"].get(name, {}).get("retry_after"))
+        if retry and now < retry:
+            why = f"saltato: in quarantena fino a {doc['nodes'][name]['retry_after']}"
+            return self._skip(cycle, name, why, now)
+        # Un cordon messo da una persona non si tocca; uno di SAGE (quarantena) sì.
+        if not node.ready or (node.unschedulable and not node.cordoned_by_sage):
             return self._skip(cycle, name, "saltato: nodo non Ready o in cordon", now)
         if not self.dry_run:
             waiting = self._control_plane_unstable(doc, nodes.values(), node.control_plane, now)
@@ -329,6 +401,7 @@ class Controller:
         manifest = act.job_manifest(yaml.safe_load(template), self.release, name, plan, now)
         st.update(
             status="running",
+            group=group.name,
             job=manifest["metadata"]["name"],
             started=_iso(now),
             plan=plan.to_dict(),
