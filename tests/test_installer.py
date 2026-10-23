@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1213,6 +1214,28 @@ class Command(unittest.TestCase):
 
 class ResumeFollow(unittest.TestCase):
     """--resume resta attaccato: finito un nodo passa al successivo, fino a Ctrl+C."""
+
+    def setUp(self):
+        # Dopo il Ctrl+C l'installer ignora i successivi: qui si rimette com'era.
+        self.addCleanup(signal.signal, signal.SIGINT, signal.getsignal(signal.SIGINT))
+
+    def test_second_ctrl_c_is_ignored(self):
+        """L'eseguibile compilato riceve il Ctrl+C due volte: un solo messaggio."""
+        installer = inst.Installer(inst.parse_args(["--no-tui", "--resume"]), inst.LineUI(False))
+        self.addCleanup(shutil.rmtree, installer.tmp, True)
+        printed = []
+
+        def read(name):
+            raise KeyboardInterrupt
+
+        with (
+            mock.patch.object(installer, "read_json_cm", side_effect=read),
+            mock.patch("builtins.print", lambda *a, **k: printed.append(a)),
+        ):
+            self.assertEqual(installer.resume_view(), 0)
+            os.kill(os.getpid(), signal.SIGINT)  # il secondo, inoltrato dall'avvio
+            time.sleep(0.05)
+        self.assertEqual(len(printed), 1)
 
     def test_follows_next_job_until_ctrl_c(self):
         installer = inst.Installer(inst.parse_args(["--no-tui", "--resume"]), inst.LineUI(False))

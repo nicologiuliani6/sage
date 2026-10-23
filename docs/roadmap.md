@@ -13,13 +13,13 @@
       scadenza per le CVE gravi ([ADR-0015](adr/0015-controllore-in-loop.md))
 - [x] Installer interattivo come eseguibile unico, con storico delle modifiche
       ([ADR-0011](adr/0011-installer-interattivo.md), [ADR-0016](adr/0016-installer-eseguibile-unico.md))
-- [x] Dashboard web di sola lettura ([ADR-0014](adr/0014-dashboard-sola-lettura.md))
+- [x] Dashboard web di sola lettura, aggiornata in tempo reale
+      ([ADR-0014](adr/0014-dashboard-sola-lettura.md))
 
 ## Da fare
 
 ### Affidabilità
 - [ ] Cluster con 3 master: verifica del giro con quorum etcd
-- [ ] Il controllore che si spegne libera subito il Lease (oggi il successivo aspetta fino a 2 minuti)
 - [ ] Immagine base pinnata per digest
 - [ ] Prompt di prova sull'LLM come controllo di salute (oggi: `health_urls`)
 

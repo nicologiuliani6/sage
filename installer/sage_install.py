@@ -30,6 +30,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -2793,6 +2794,7 @@ class Installer:
                     return 0
                 time.sleep(RESUME_POLL)
         except KeyboardInterrupt:
+            ignore_interrupts()
             print("\nUscito: il lavoro di SAGE nel cluster continua.")
         return 0
 
@@ -2841,6 +2843,7 @@ class Installer:
         try:
             subprocess.run(cmd, check=False)
         except KeyboardInterrupt:
+            ignore_interrupts()
             print("\ndashboard chiusa")
         return 0
 
@@ -2940,6 +2943,7 @@ class Installer:
         try:
             subprocess.run(cmd + ["-n", self.ns, "logs", "-f", f"job/{job}"], check=False)
         except KeyboardInterrupt:
+            ignore_interrupts()
             # Si smette solo di leggere il log: il Job gira nel cluster, indipendente da qui.
             print(
                 f"\nSmesso di seguire il log: il controllo continua nel cluster. "
@@ -3142,6 +3146,16 @@ def parse_args(argv=None):
     return args
 
 
+def ignore_interrupts() -> None:
+    """Dopo il primo Ctrl+C gli altri si ignorano. L'eseguibile compilato (un solo file)
+    riceve il Ctrl+C due volte: dal terminale e dal processo di avvio che glielo inoltra.
+    Senza questo il secondo arriva mentre si esce e stampa un altro messaggio."""
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (ValueError, OSError):  # non nel thread principale
+        pass
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
@@ -3154,6 +3168,7 @@ def main(argv=None) -> int:
         ui.error(str(e))
         return 1
     except (KeyboardInterrupt, EOFError):
+        ignore_interrupts()
         ui.close()
         print(
             "\ninterrotto: si ferma solo questo programma. Quello che SAGE sta facendo nel "

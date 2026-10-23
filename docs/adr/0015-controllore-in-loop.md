@@ -33,7 +33,11 @@ sistema uno dopo l'altro e, finito il giro, ricomincia.
   remediation scomparso ferma tutto, perché non si sa in che stato sia il nodo.
 - **Un solo controllore attivo**: un Lease (`coordination.k8s.io`) con rinnovo a ogni passo.
   Chi non lo tiene aspetta; chi lo perde esce e viene riavviato. La strategia Recreate evita
-  due copie durante un aggiornamento.
+  due copie durante un aggiornamento. Allo spegnimento (SIGTERM) il controllore finisce il
+  passo in corso e libera il Lease, così la copia nuova parte subito.
+- **Niente attese inutili**: i passi che non lanciano niente (coda pronta, nodo senza niente da
+  fare o saltato, remediation appena riuscita) si fanno di fila; si aspetta `poll_seconds`
+  solo quando c'è un Job in corso o la pausa.
 - **Mai fermo in silenzio**: un controllore bloccato smette di aggiornare il file di battito e
   la livenessProbe lo fa riavviare; un controllore spento o senza rinnovi del Lease è un
   allarme nella dashboard. Un nodo non Ready, in cordon o non raggiunto dal controllo viene

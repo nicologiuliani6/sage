@@ -48,6 +48,7 @@ class KubeApi(Protocol):
     def pop_flag(self, name: str) -> bool: ...
     def set_flag(self, name: str) -> None: ...
     def acquire_lease(self, name: str, holder: str, seconds: int) -> bool: ...
+    def release_lease(self, name: str, holder: str) -> None: ...
     def read_lease(self, name: str) -> dict[str, Any] | None: ...
     def read_deployment(self, name: str) -> dict[str, Any] | None: ...
 
@@ -239,6 +240,25 @@ class Kube:
                 return False
             raise
         return True
+
+    def release_lease(self, name: str, holder: str) -> None:
+        """Lascia il Lease a chi viene dopo, se lo tiene ancora `holder`.
+
+        Non lo cancella: la durata scende a 1 secondo, quindi scade subito ma resta l'ora
+        dell'ultimo rinnovo (la dashboard la usa per dire se il controllore è vivo).
+        """
+        from kubernetes.client.exceptions import ApiException
+
+        api = self._lease_api()
+        try:
+            lease = api.read_namespaced_lease(name, self.namespace)
+            if lease.spec.holder_identity != holder:
+                return
+            lease.spec.lease_duration_seconds = 1
+            api.replace_namespaced_lease(name, self.namespace, lease)
+        except ApiException as exc:
+            if exc.status not in (404, 409):
+                raise
 
     def read_lease(self, name: str) -> dict[str, Any] | None:
         from kubernetes.client.exceptions import ApiException
