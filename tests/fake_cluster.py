@@ -170,6 +170,8 @@ def helm(args):
         return out({"version": state["helm"]["revision"]})
     if args[:2] == ["get", "values"]:
         return out(state["helm"]["values"])
+    if args[0] == "history":
+        return out([{"revision": state["helm"]["revision"], "status": "deployed"}])
     if args[:2] == ["upgrade", "--install"]:
         values_file = args[args.index("-f") + 1]
         state["revision"] = state.get("revision", 0) + 1

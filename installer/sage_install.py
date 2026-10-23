@@ -1259,6 +1259,16 @@ class ScreenUI(LineUI):
 # ------------------------------------------------------------------ comandi esterni
 
 
+def helm_time(value: str) -> datetime.datetime | None:
+    """Ora di `helm history -o json` ("2026-10-23T15:05:12.123456789+02:00"), con il suo
+    fuso: i nanosecondi si tagliano, Python ne accetta al massimo sei cifre."""
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", value)
+    if not m:
+        return None
+    zone = "+00:00" if m.group(2) in (None, "Z") else m.group(2)
+    return datetime.datetime.fromisoformat(m.group(1) + zone)
+
+
 def transient_api_error(proc: subprocess.CompletedProcess) -> bool:
     text = (proc.stderr or "") + (proc.stdout or "")[-500:]
     return proc.returncode != 0 and any(e in text for e in TRANSIENT_API_ERRORS)
@@ -1933,7 +1943,37 @@ class Installer:
         status = self.helm("status", self.release, check=False)
         if status.returncode != 0:
             return None
+        self.recover_pending()
         return json.loads(self.helm("get", "values", self.release, "-o", "json").stdout) or {}
+
+    def recover_pending(self) -> None:
+        """Un aggiornamento interrotto (API che cade, etcd lento) lascia la release in
+        pending-*: Helm rifiuta ogni operazione e i valori letti sarebbero quelli mai
+        applicati. Si torna all'ultima revisione andata a buon fine."""
+        history = json.loads(self.helm("history", self.release, "-o", "json").stdout or "[]")
+        if not history or not history[-1].get("status", "").startswith("pending-"):
+            return
+        # Anche un aggiornamento in corso (un'altra persona, adesso) è pending-*: si tocca
+        # solo se è più vecchio del timeout di helm in run().
+        started = helm_time(history[-1].get("updated", ""))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if started is None or now - started < datetime.timedelta(seconds=600):
+            raise Fail(
+                f"un aggiornamento della release {self.release} è in corso "
+                f"(revisione {history[-1]['revision']}): riprova tra qualche minuto"
+            )
+        good = [h for h in history if h.get("status") in ("deployed", "superseded")]
+        if not good:
+            raise Fail(
+                f"la release {self.release} è rimasta a metà della prima installazione: "
+                f"helm -n {self.ns} uninstall {self.release}, poi rilancia sage"
+            )
+        revision = str(good[-1]["revision"])
+        self.ui.warn(
+            f"l'ultimo aggiornamento non è finito (revisione {history[-1]['revision']}, "
+            f"{history[-1]['status']}): torno alla revisione {revision}"
+        )
+        self.helm("rollback", self.release, revision)
 
     # --- configurazione
     def configure(self, current: dict, new: bool) -> int:
