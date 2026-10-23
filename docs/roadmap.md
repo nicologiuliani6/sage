@@ -49,6 +49,6 @@
 - [ ] Dashboard aggregata per gruppo, con filtri e paginazione
 
 ### Estensioni
-- [ ] Prova end-to-end della remediation su una VM SUSE (Debian è già in CI)
+- [ ] Prova end-to-end della remediation su nodi Debian/Ubuntu e SUSE reali
 - [ ] Amazon Linux 2023 (`releasever=latest`), Alpine, Arch
 - [ ] Dashboard: azioni operative (spegni, giro, riprendi) con login tramite token Kubernetes

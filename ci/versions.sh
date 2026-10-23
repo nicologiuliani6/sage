@@ -22,8 +22,3 @@ UBUNTU2204_IMAGE=ubuntu:jammy-20230425@sha256:dfd64a3b4296d8c9b62aa3309984f8620b
 LEAP156_IMAGE=opensuse/leap:15.6@sha256:79be7751205ea84559990fb76b1bec71e38d6fad41c70a4f6c921b803b58f421
 ALMA9_IMAGE=almalinux:9.3@sha256:3f0cc7f99b0739908a8d6e4adec37ef47908991dc838dac43d52effe90fec747
 FEDORA_IMAGE=fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
-# VM Debian per provare la remediation vera (ci/vm_debian.sh): immagine cloud datata, con
-# aggiornamenti in sospeso. Debian toglie le build vecchie dopo qualche mese: se il download
-# fallisce, scegliere una build recente da cloud.debian.org con il suo SHA512.
-DEBIAN_VM_IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-genericcloud-amd64-20260914-2601.qcow2
-DEBIAN_VM_IMAGE_SHA512=95e110dfcdbd0ed8a82a75ed9579802f9950cabf51a810dcc6388e81bc778188713878b9f28d583a0ea602fbf48b35996ae9ad37f584166d8fbd6489df248f53
