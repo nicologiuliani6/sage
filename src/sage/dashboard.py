@@ -318,8 +318,17 @@ def controller_status(
         "queue": len(queue),
         "running": running,
         "results": [{"node": n, **results[n]} for n in queue if n in results],
-        "halted": bool(doc.get("halted")),
-        "halt_reason": doc.get("halt_reason"),
+        # Quarantena (ADR-0019): nodi e gruppi che aspettano prima di essere ritentati.
+        "quarantined": [
+            {"node": n, "failures": st.get("failures", 0), "until": st["retry_after"]}
+            for n, st in sorted((doc.get("nodes") or {}).items())
+            if (_parse(st.get("retry_after")) or now) > now
+        ],
+        "stopped_groups": [
+            {"group": g, "until": gst["retry_after"], "reason": gst.get("reason", "")}
+            for g, gst in sorted((doc.get("groups") or {}).items())
+            if (_parse(gst.get("retry_after")) or now) > now
+        ],
         "error": cycle.get("error"),
     }
 
@@ -350,8 +359,14 @@ def build_status(
         alarm("critical", f"configurazione di SAGE non leggibile: {config_error}")
     groups = assign_groups(nodes, cfg.groups)[0] if cfg else {}
     ctl = controller_status(controller, lease, deployment, local_now)
-    if ctl["halted"]:
-        alarm("critical", f"SAGE FERMO: {ctl['halt_reason']}")
+    for q in ctl["quarantined"]:
+        alarm(
+            "warning",
+            f"{q['node']} in quarantena dopo {q['failures']} remediation fallite: "
+            f"si ritenta da solo dopo {q['until']}",
+        )
+    for g in ctl["stopped_groups"]:
+        alarm("warning", f"gruppo {g['group']} fermo ({g['reason']}): riprova dopo {g['until']}")
     if ctl["suspended"]:
         alarm("warning", "controllore spento: nessun giro finché non lo riattivi")
     elif not ctl["alive"]:

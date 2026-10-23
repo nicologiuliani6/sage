@@ -6,11 +6,15 @@ import base64
 import gzip
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 STATE_KEY = "data.json.gz"
+
+
+# Messa da remediate.yml sui nodi che SAGE mette in cordon (ADR-0019).
+CORDON_ANNOTATION = "sage.io/cordoned"
 
 
 @dataclass(frozen=True)
@@ -20,10 +24,16 @@ class Node:
     internal_ip: str | None
     ready: bool
     unschedulable: bool
+    annotations: dict[str, str] = field(default_factory=dict)
 
     @property
     def control_plane(self) -> bool:
         return "node-role.kubernetes.io/control-plane" in self.labels
+
+    @property
+    def cordoned_by_sage(self) -> bool:
+        """In cordon per mano di SAGE (remediate.yml lo segna): SAGE lo può riprendere."""
+        return self.unschedulable and self.annotations.get(CORDON_ANNOTATION) == "true"
 
 
 @dataclass(frozen=True)
@@ -103,6 +113,7 @@ class Kube:
                     internal_ip=ip,
                     ready=ready,
                     unschedulable=bool(n.spec.unschedulable),
+                    annotations=dict(n.metadata.annotations or {}),
                 )
             )
         return sorted(nodes, key=lambda x: x.name)

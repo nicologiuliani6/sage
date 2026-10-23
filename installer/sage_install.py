@@ -1452,8 +1452,12 @@ def progress_lines(doc: dict | None) -> tuple[list[str], str | None]:
         f"Giro {cycle.get('id')}: {PHASES.get(cycle.get('phase'), cycle.get('phase'))}"
         f" (iniziato {cycle.get('started', '?')}, motivo: {cycle.get('reason', '?')})"
     ]
-    if doc.get("halted"):
-        lines.append(f"FERMO: {doc.get('halt_reason')}")
+    for name, st in sorted((doc.get("nodes") or {}).items()):
+        if st.get("retry_after"):
+            lines.append(f"{name}: in quarantena, si ritenta dopo {st['retry_after']}")
+    for name, gst in sorted((doc.get("groups") or {}).items()):
+        if gst.get("retry_after"):
+            lines.append(f"gruppo {name} fermo, riprova dopo {gst['retry_after']}")
     running = {
         n: st.get("job")
         for n, st in (doc.get("nodes") or {}).items()

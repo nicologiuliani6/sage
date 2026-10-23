@@ -146,7 +146,28 @@ def cmd_remediate(args: argparse.Namespace) -> int:
     cfg = config.load(args.config)
     set_log_level(cfg)
     plan = json.loads(base64.b64decode(args.plan))
-    return remediate.run(cfg, Kube(), args.node, plan, paths.workdir() / "remediate")
+    return remediate.run(cfg, Kube(), args.node, plan, paths.workdir() / "remediate", args.config)
+
+
+def cmd_recover_action(args: argparse.Namespace) -> int:
+    from sage import recover
+
+    cfg = config.load(args.config)
+    set_log_level(cfg)
+
+    # Legge il log da stdin
+    log_content = sys.stdin.read()
+
+    # Classifica l'errore e ottiene l'azione
+    action, source = recover.classify(args.pm, log_content, cfg.llm)
+
+    # Stampa solo l'azione su stdout
+    print(action)
+
+    # Stampa il messaggio di recupero su stderr
+    print(f"recupero: {action} ({source})", file=sys.stderr)
+
+    return 0
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -203,6 +224,12 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("resume", help="riprende dopo un errore, una volta controllato il nodo")
 
+    p = sub.add_parser(
+        "recover-action", help="sceglie il recupero dopo un aggiornamento fallito (usato dai Job)"
+    )
+    p.add_argument("--config", required=True)
+    p.add_argument("--pm", required=True, choices=["apt", "dnf", "zypper"])
+
     p = sub.add_parser("dashboard", help="dashboard web di sola lettura")
     p.add_argument("--config", required=True)
     p.add_argument("--bind", default="127.0.0.1", help="indirizzo (predefinito solo locale)")
@@ -226,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         "scan": cmd_scan,
         "controller": cmd_controller,
         "remediate": cmd_remediate,
+        "recover-action": cmd_recover_action,
         "resume": cmd_resume,
         "dashboard": cmd_dashboard,
     }

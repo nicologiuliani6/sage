@@ -14,15 +14,17 @@ controllore* (`suspend: true` nei valori).
 
 SAGE ha già riportato i pacchetti alla versione di prima, se possibile (dnf: `history undo`;
 zypper e apt: reinstalla le versioni precedenti se il repository le ha ancora), tolto i blocchi dei moduli aggiunti e
-lasciato il nodo in cordon. Il controllore resta fermo: nessun altro nodo viene toccato.
+rimesso in servizio il nodo se è Ready (altrimenti resta in cordon). Il nodo è in quarantena e
+viene ritentato da solo (ADR-0019); gli altri nodi proseguono. Questi passi servono solo per
+capire il perché o per accelerare.
 
 1. Leggi il log: `kubectl -n <namespace> logs job/<release>-fix-<nodo>-<data>`
 2. Controlla il nodo. Se l'errore era sul kernel, il rollback non può togliere il kernel in
    esecuzione: riavvia sul kernel precedente se serve (`grubby --set-default ...` su RHEL,
    `GRUB_DEFAULT` e `update-grub` su Debian e Ubuntu, `grub2-set-default` su SUSE).
 3. `kubectl uncordon <nodo>`
-4. Riprendi: `kubectl -n <namespace> create configmap <release>-resume`. Il controllore la
-   legge al passo successivo, la cancella e continua il giro dal nodo dopo.
+4. Per ritentare subito: `kubectl -n <namespace> create configmap <release>-resume`. Il
+   controllore la legge al passo successivo, la cancella e azzera quarantene e gruppi fermi.
 
 ## Emergenza: API Kubernetes non disponibile
 

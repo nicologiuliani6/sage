@@ -1154,12 +1154,13 @@ class Progress(unittest.TestCase):
         self.assertEqual(inst.progress_lines(None)[1], None)
         doc = {
             "cycle": {"id": 3, "phase": "scan", "scan_job": "sage-scan-1", "queue": []},
-            "halted": True,
-            "halt_reason": "remediation fallita su w1",
+            "nodes": {"w1": {"status": "failed", "retry_after": "2026-10-23T18:00:00+00:00"}},
+            "groups": {"worker": {"retry_after": "2026-10-23T18:00:00+00:00"}},
         }
         lines, job = inst.progress_lines(doc)
         self.assertEqual(job, "sage-scan-1")
-        self.assertIn("FERMO: remediation fallita su w1", lines)
+        self.assertIn("w1: in quarantena, si ritenta dopo 2026-10-23T18:00:00+00:00", lines)
+        self.assertIn("gruppo worker fermo, riprova dopo 2026-10-23T18:00:00+00:00", lines)
         pause = {
             "cycle": {
                 "id": 4,

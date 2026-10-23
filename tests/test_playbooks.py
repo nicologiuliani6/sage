@@ -145,6 +145,10 @@ FAKE_APT = """#!/bin/bash
 echo "apt-get $*" >> "$FAKE_STATE/calls"
 case "$*" in
   "-y install --only-upgrade"*)
+    if [ -n "$FAKE_LOCK_ONCE" ] && [ ! -f "$FAKE_STATE/locked" ]; then
+      touch "$FAKE_STATE/locked"
+      echo "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 42"; exit 100
+    fi
     if [ -n "$FAKE_DEPSOLVE_FAIL" ]; then echo "E: Unable to correct problems"; exit 100; fi
     touch "$FAKE_STATE/after"
     if [ -n "$FAKE_FAIL_UPDATE" ]; then echo "E: dpkg returned an error"; exit 100; fi
@@ -181,7 +185,7 @@ fi
 """
 
 
-def run_other(tmp_path, pm, fail_update=False, depsolve_fail=False, **overrides):
+def run_other(tmp_path, pm, fail_update=False, depsolve_fail=False, lock_once=False, **overrides):
     bin_dir, state = tmp_path / "bin", tmp_path / "state"
     bin_dir.mkdir()
     state.mkdir()
@@ -211,6 +215,8 @@ def run_other(tmp_path, pm, fail_update=False, depsolve_fail=False, **overrides)
         env["FAKE_FAIL_UPDATE"] = "1"
     if depsolve_fail:
         env["FAKE_DEPSOLVE_FAIL"] = "1"
+    if lock_once:
+        env["FAKE_LOCK_ONCE"] = "1"
     proc = subprocess.run(
         [
             "ansible-playbook",
@@ -283,3 +289,15 @@ def test_unknown_package_manager_is_refused(tmp_path):
     proc, calls, _ = run_other(tmp_path, "apt", sage_package_manager="pacman")
     assert proc.returncode != 0 and calls == []
     assert "senza modificare il nodo" in proc.stdout
+
+
+def test_apt_lock_held_is_recovered_without_rollback(tmp_path):
+    """unattended-upgrades tiene il lock: sage recover-action sceglie wait_lock (regola
+    fissa, nessun LLM) e il secondo tentativo riesce, senza rollback."""
+    config_path = ANSIBLE_DIR.parent / "examples" / "config.example.yaml"
+    proc, calls, undone = run_other(
+        tmp_path, "apt", lock_once=True, sage_config_path=str(config_path)
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert len([c for c in calls if "--only-upgrade" in c]) == 2
+    assert not undone

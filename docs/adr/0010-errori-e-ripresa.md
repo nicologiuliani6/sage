@@ -1,6 +1,6 @@
 # ADR-0010: Un errore ferma tutto, una persona riprende
 
-Stato: accettata (2026-10-21)
+Stato: accettata (2026-10-21), in parte sostituita dalla [0019](0019-quarantena-del-nodo.md)
 
 ## Contesto
 
