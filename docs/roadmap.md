@@ -35,6 +35,19 @@
 - [ ] Accordo con le decisioni di un esperto su un campione
 - [ ] Stabilità delle risposte del modello
 
+### Scala: cluster da 1000 nodi
+- [ ] Remediation in parallelo per gruppo. Master sempre uno alla volta, e solo con tutti i
+      membri etcd sani prima di iniziare. Worker con avvio graduale (canary, poi 1, 2, 4...)
+      fino a un massimo del gruppo (`max_unavailable`, numero o percentuale), nel rispetto
+      dei PodDisruptionBudget, della capacità libera del cluster e di un limite per zona.
+      Un errore blocca i nuovi nodi; quelli in corso finiscono.
+- [ ] Raccolta più parallela: `forks` di Ansible configurabile, più pod di controllo
+- [ ] Stato nell'API Kubernetes per oggetti piccoli: una risorsa (CRD) per nodo con stato e
+      piano, al posto della ConfigMap unica (limite di 1 MiB); report completo e VEX su un
+      volume persistente o un object storage, non in etcd
+- [ ] Chiamate all'LLM in parallelo e budget per giro adatto a un server locale veloce
+- [ ] Dashboard aggregata per gruppo, con filtri e paginazione
+
 ### Estensioni
 - [ ] Prova end-to-end della remediation su una VM SUSE (Debian è già in CI)
 - [ ] Amazon Linux 2023 (`releasever=latest`), Alpine, Arch
