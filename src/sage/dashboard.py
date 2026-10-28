@@ -63,6 +63,12 @@ def _parse(value: str | None) -> datetime | None:
         return None
 
 
+def _local(value: str | None, now: datetime) -> str:
+    """Data leggibile nel fuso della dashboard, per i testi (gli allarmi non sono ISO)."""
+    parsed = _parse(value)
+    return parsed.astimezone(now.tzinfo).strftime("%d/%m %H:%M") if parsed else "mai"
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="minutes") if value else None
 
@@ -205,6 +211,7 @@ def node_status(
             "started": wave.get("started"),
             "last_success": wave.get("last_success"),
             "outcome": (outcome or {}).get("outcome"),
+            "detail": (outcome or {}).get("detail"),
         },
         "profile": {
             "units": len((profile or {}).get("units") or []),
@@ -378,7 +385,9 @@ def health(
         old = generated is None or now - generated > timedelta(days=2)
         components.append(
             item(
-                "ultimo controllo", "warning" if old else "ok", report.get("generated_at") or "mai"
+                "ultimo controllo",
+                "warning" if old else "ok",
+                _local(report.get("generated_at"), now),
             )
         )
     for name, st in sorted((report.get("llm") or {}).items()):
@@ -445,10 +454,11 @@ def build_status(
         alarm(
             "warning",
             f"{q['node']} in quarantena dopo {q['failures']} remediation fallite: "
-            f"si ritenta da solo dopo {q['until']}",
+            f"si ritenta da solo dopo {_local(q['until'], local_now)}",
         )
     for g in ctl["stopped_groups"]:
-        alarm("warning", f"gruppo {g['group']} fermo ({g['reason']}): riprova dopo {g['until']}")
+        until = _local(g["until"], local_now)
+        alarm("warning", f"gruppo {g['group']} fermo ({g['reason']}): riprova dopo {until}")
     if ctl["suspended"]:
         alarm("warning", "controllore spento: nessun giro finché non lo riattivi")
     elif not ctl["alive"]:

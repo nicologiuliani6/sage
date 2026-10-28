@@ -105,9 +105,11 @@ normali):
 | `sage --live` | passa al vivo un'installazione in simulazione |
 | `sage --reinstall --live` | rifà l'installazione da zero, in modalità reale, tenendo storico e cache dell'LLM |
 
-La **dashboard** è di sola lettura ([ADR-0014](adr/0014-dashboard-sola-lettura.md)): allarmi,
-giro in corso nodo per nodo, CVE gravi con la scadenza, una scheda per nodo con ogni decisione e
-la sua prova, CVE per urgenza, storico, VEX. Da un altro computer:
+La **dashboard** è di sola lettura ([ADR-0014](adr/0014-dashboard-sola-lettura.md)) e ha sette
+pagine: Panoramica (allarmi, grafici dello stato dei nodi, delle CVE e del giro per gruppo), Nodi
+(una scheda per nodo con ogni decisione, la prova e il motivo di un fallimento), CVE, Giri (esiti
+degli ultimi 100 giri), Salute (componenti di SAGE, endpoint LLM, un quadrato per server), Log (dei
+pod di SAGE) e Storico con il VEX. Da un altro computer:
 
 ```bash
 ssh -L 8080:localhost:8080 <utente>@<master>

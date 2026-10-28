@@ -55,3 +55,21 @@ modificare il cluster né una nuova superficie d'attacco.
   plugin in React. Da riconsiderare se il cluster adotta Headlamp.
 - **Grafana con metriche**: utile per l'andamento nel tempo, ma serve Prometheus e non mostra
   bene il motivo di ogni decisione.
+
+## Aggiornamento (2026-10-28): pagine, grafici, giri, log e salute
+
+La pagina unica è diventata sette pagine (`#/panoramica`, `#/nodi`, `#/cve`, `#/giri`,
+`#/salute`, `#/log`, `#/storico`), sempre una sola pagina statica senza framework. I grafici
+(ciambelle, barre impilate) sono SVG costruiti nodo per nodo: niente HTML dai dati, niente stili
+inline, colori dei quattro stati riservati e sempre accompagnati da simbolo ed etichetta.
+
+- **Giri**: il controllore salva un riassunto di ogni giro (ultimi 100) nella ConfigMap
+  `<release>-cycles`; la dashboard la legge.
+- **Salute**: componenti (controllore, API ed etcd da `/readyz`, KEV, età dell'ultimo
+  controllo, ogni endpoint LLM con risposte, errori e latenza) e un quadrato per server.
+- **Log**: la dashboard può elencare i pod e leggerne i log, ma solo nel namespace di SAGE
+  (Role, non ClusterRole) e solo per un pod del rilascio con nome valido: il parametro non è mai
+  usato così com'è. I log contengono dati dei nodi: restano nel cluster e li vede solo chi può
+  fare il port-forward.
+- Un fallimento mostra il suo motivo: `sage remediate` lo scrive nel messaggio di terminazione
+  del Job (es. "il nodo non è ripartito dopo il riavvio"), il controllore lo mette nell'esito.
