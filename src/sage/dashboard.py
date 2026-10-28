@@ -300,8 +300,9 @@ def controller_status(
     alive = bool(renewed and now - renewed < timedelta(minutes=5))
     queue = cycle.get("queue") or []
     results = cycle.get("results") or {}
-    running = next(
-        (n for n, st in (doc.get("nodes") or {}).items() if st.get("status") == "running"), None
+    # Con max_unavailable > 1 più nodi insieme: "node4, node5".
+    running = ", ".join(
+        sorted(n for n, st in (doc.get("nodes") or {}).items() if st.get("status") == "running")
     )
     phase = cycle.get("phase")
     if suspended:

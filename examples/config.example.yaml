@@ -55,6 +55,8 @@ groups:                                  # i nodi fuori da ogni gruppo non vengo
     drain: evict                         # evict | wait-empty
     allow_remove: true                   # rimuovere pacchetti inutilizzati
     allow_mitigate: true                 # bloccare moduli del kernel
+    max_unavailable: 1                   # nodi insieme: numero o "10%" (canary da solo, poi 1, 2, 4...)
+    max_unavailable_per_zone: 0          # al massimo tanti per zona (topology.kubernetes.io/zone); 0 = no
   - name: gpu
     selector: sage.io/group=gpu
     order: 2
