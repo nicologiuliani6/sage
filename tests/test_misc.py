@@ -166,3 +166,17 @@ def test_failure_message_from_ansible_output():
     )
     assert remediate.failure_message(out, 2).startswith("aggiornamento NON riuscito: il nodo non è")
     assert remediate.failure_message("niente", 3) == "remediation fallita (codice 3)"
+
+
+def test_control_plane_labels_of_every_distribution():
+    from sage.kube import Node
+
+    for label in (
+        "node-role.kubernetes.io/control-plane",  # kubeadm
+        "node-role.kubernetes.io/master",  # cluster vecchi, k3s
+        "node-role.kubernetes.io/etcd",  # RKE2 e k3s con nodi solo etcd
+    ):
+        assert Node("n", {label: "true"}, None, True, False).control_plane
+    assert not Node(
+        "n", {"node-role.kubernetes.io/worker": "true"}, None, True, False
+    ).control_plane

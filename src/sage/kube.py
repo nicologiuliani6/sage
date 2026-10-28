@@ -18,6 +18,11 @@ STATE_KEY = "data.json.gz"
 
 # Messa da remediate.yml sui nodi che SAGE mette in cordon (ADR-0019).
 CORDON_ANNOTATION = "sage.io/cordoned"
+CONTROL_PLANE_LABELS = (
+    "node-role.kubernetes.io/control-plane",
+    "node-role.kubernetes.io/master",
+    "node-role.kubernetes.io/etcd",
+)
 
 
 @dataclass(frozen=True)
@@ -33,7 +38,9 @@ class Node:
 
     @property
     def control_plane(self) -> bool:
-        return "node-role.kubernetes.io/control-plane" in self.labels
+        # kubeadm usa control-plane (prima master); RKE2 e k3s possono avere nodi solo etcd:
+        # contano come master (uno alla volta, solo con il control plane stabile).
+        return any(label in self.labels for label in CONTROL_PLANE_LABELS)
 
     @property
     def cordoned_by_sage(self) -> bool:
