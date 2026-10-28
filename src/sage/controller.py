@@ -306,9 +306,14 @@ class Controller:
         reason = self.kube.job_message(job.name) if job is not None else None
         if reason:
             why = f"fallita: {reason}"
-        return self._quarantine(doc, node, why, now)
+        # Drain fermato da un PodDisruptionBudget (es. storage che tiene repliche sul nodo):
+        # il nodo non ha niente che non va, si ritenta più tardi senza fermare il gruppo.
+        blocked = bool(reason and "disruption budget" in reason)
+        return self._quarantine(doc, node, why, now, breaker=not blocked)
 
-    def _quarantine(self, doc: dict[str, Any], node: str, why: str, now: datetime) -> str:
+    def _quarantine(
+        self, doc: dict[str, Any], node: str, why: str, now: datetime, breaker: bool = True
+    ) -> str:
         """Il nodo fallito aspetta (sempre di più a ogni errore), gli altri proseguono."""
         st = doc["nodes"][node]
         cycle = doc["cycle"]
@@ -319,7 +324,7 @@ class Controller:
         cycle["results"][node] = {"outcome": OUTCOME_FAILED, "detail": why, "at": _iso(now)}
         message = f"{node}: remediation {why} (job {st['job']}), in quarantena fino a {_iso(until)}"
         alerts.notify(self.cfg, self.kube, node, "SageQuarantine", message)
-        stopped = self._group_breaker(doc, node, now)
+        stopped = self._group_breaker(doc, node, now) if breaker else ""
         if stopped:
             message += f"; {stopped}"
         log.error("%s", message)

@@ -234,33 +234,28 @@ class Kube:
         return failed
 
     def post_event(self, node: str, reason: str, message: str) -> None:
-        """Crea un evento Kubernetes di tipo Warning per il nodo dato (ADR-0019)."""
-        from kubernetes import client
-        from kubernetes.client.exceptions import ApiException
-
-        now = datetime.now(UTC)
-        truncated = message[:1024]
-        event = client.V1Event(
-            metadata=client.V1ObjectMeta(generate_name="sage-"),
-            involved_object=client.V1ObjectReference(
-                api_version="v1",
-                kind="Node",
-                name=node,
-            ),
-            reason=reason,
-            message=truncated,
-            type="Warning",
-            source=client.V1EventSource(component="sage"),
-            first_timestamp=now,
-            last_timestamp=now,
-            count=1,
-        )
+        """Evento Kubernetes di tipo Warning sul nodo (ADR-0019). Un avviso perso non deve
+        mai fermare il controllore: qualsiasi errore finisce solo nel log."""
         try:
+            from kubernetes import client
+
+            # kubernetes >= 37: CoreV1Event; prima: V1Event.
+            event_cls = getattr(client, "CoreV1Event", None) or client.V1Event
+            now = datetime.now(UTC)
+            event = event_cls(
+                metadata=client.V1ObjectMeta(generate_name="sage-"),
+                involved_object=client.V1ObjectReference(api_version="v1", kind="Node", name=node),
+                reason=reason,
+                message=message[:1024],
+                type="Warning",
+                source=client.V1EventSource(component="sage"),
+                first_timestamp=now,
+                last_timestamp=now,
+                count=1,
+            )
             self.core.create_namespaced_event(self.namespace, event)
-        except ApiException:
-            log.warning("evento per %s (%s): API error", node, reason)
-        except Exception:  # noqa: BLE001 (connessione, timeout, ecc.)
-            log.warning("evento per %s (%s): errore imprevisto", node, reason)
+        except Exception:  # noqa: BLE001
+            log.warning("evento per %s (%s) non creato", node, reason, exc_info=True)
 
     def list_pods(self, label_selector: str) -> list[dict[str, Any]]:
         """Pod di SAGE nel namespace (dashboard, pagina Log), dal più recente."""

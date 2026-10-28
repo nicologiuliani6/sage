@@ -25,7 +25,10 @@ def notify(
     Il parametro `post` (per i test) se fornito sostituisce l'invio HTTP:
     post(url, body_dict).
     """
-    kube.post_event(node, reason, message)
+    try:
+        kube.post_event(node, reason, message)
+    except Exception:  # noqa: BLE001 (un avviso perso non ferma il controllore)
+        log.warning("evento per %s (%s) non creato", node, reason, exc_info=True)
     if cfg.alerts.webhook_url and post is not None:
         body = {
             "source": "sage",

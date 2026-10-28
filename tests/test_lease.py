@@ -98,3 +98,21 @@ def test_api_problems_programming_error_is_not_api_down():
     k._client, _ = real_client(error=TypeError("firma cambiata"))
     with pytest.raises(TypeError):
         k.api_problems()
+
+
+def test_post_event_builds_a_real_event_and_never_raises():
+    """Con la vera libreria kubernetes: la classe dell'evento esiste (in 37 è CoreV1Event)
+    e un errore dell'API non arriva al controllore."""
+    k = Kube.__new__(Kube)
+    k.namespace = "sage"
+    sent = []
+    k.core = SimpleNamespace(create_namespaced_event=lambda ns, ev: sent.append((ns, ev)))
+    k.post_event("node7", "SageQuarantine", "x" * 2000)
+    ((ns, event),) = sent
+    assert ns == "sage" and event.involved_object.name == "node7" and len(event.message) == 1024
+
+    def broken(ns, ev):
+        raise RuntimeError("API giù")
+
+    k.core = SimpleNamespace(create_namespaced_event=broken)
+    k.post_event("node7", "SageQuarantine", "x")  # nessuna eccezione

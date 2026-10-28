@@ -615,3 +615,19 @@ def test_failure_reason_from_the_job_reaches_state_and_alerts():
     assert "NON riuscito" in ctl.step(T0)
     detail = ctl.load()["cycle"]["results"]["w1"]["detail"]
     assert detail.startswith("fallita: aggiornamento NON riuscito")
+
+
+def test_drain_blocked_by_pdb_waits_without_stopping_the_group():
+    """Un PodDisruptionBudget (es. Longhorn) non è un guasto del nodo: si ritenta più tardi,
+    il gruppo prosegue."""
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": PLAN, "w3": EMPTY, "m1": EMPTY})
+    ctl.step(T0)
+    job = last_fix(cluster)
+    cluster.messages[job] = "Cannot evict pod as it would violate the pod's disruption budget."
+    cluster.finish(job, ok=False)
+    msg = ctl.step(T0)
+    assert "in quarantena" in msg and "gruppo" not in msg
+    assert "avviata su w2" in ctl.step(T0)
