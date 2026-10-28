@@ -112,5 +112,12 @@ policy:
     - "xt_*"
 
 # Avvisi quando un nodo va in quarantena o un gruppo si ferma (ADR-0019).
+# Aggiornamento automatico alle release firmate (ADR-0021): solo in pausa tra due giri; se il
+# SAGE nuovo non produce un report entro 45 minuti torna alla versione di prima.
+self_update:
+  channel: minor                         # off | patch (solo 0.X.y) | minor (mai una maggiore)
+  check_hours: 24
+  repository: OWNER/sage                 # repository GitHub delle release (lo scrive l'installer)
+
 # alerts:
 #   webhook_url: https://hooks.example/x   # POST JSON per ogni avviso; vuoto = solo eventi K8s

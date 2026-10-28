@@ -24,6 +24,13 @@ install_opa() {
   export SAGE_OPA_BIN="$TOOLS/opa"
 }
 
+install_cosign() {
+  curl -fsSL -o "$TOOLS/cosign" \
+    "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+  echo "${COSIGN_SHA256}  $TOOLS/cosign" | sha256sum -c -
+  chmod +x "$TOOLS/cosign"
+}
+
 install_kind() {
   curl -fsSL -o "$TOOLS/kind" \
     "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"

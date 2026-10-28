@@ -34,6 +34,9 @@ python3 "$dist/sage-install.py" --version
 # Eseguibile unico dall'installer già fissato: sui master non serve Python.
 ci/installer_bin.sh "$dist/sage-install.py" "$dist"
 (cd "$dist" && sha256sum sage sage-install.py "$chart" > SHA256SUMS)
+# Firma keyless (OIDC del workflow): SAGE la verifica prima di aggiornarsi da solo.
+install_cosign
+"$TOOLS/cosign" sign-blob --yes --bundle "$dist/SHA256SUMS.sigstore.json" "$dist/SHA256SUMS"
 
 cat > "$dist/notes.md" <<NOTES
 Installazione, da un master del cluster (serve kubectl con permessi di amministratore):
@@ -56,7 +59,7 @@ disinstalla.
 - Chart: \`${chart}\` (sha256 \`${chart_sha}\`)
 NOTES
 
-assets=("$dist/sage" "$dist/sage-install.py" "$dist/$chart" "$dist/SHA256SUMS")
+assets=("$dist/sage" "$dist/sage-install.py" "$dist/$chart" "$dist/SHA256SUMS" "$dist/SHA256SUMS.sigstore.json")
 # Un'altra esecuzione per lo stesso tag ha già pubblicato i file: si lasciano i suoi, così
 # installer, chart e checksum vengono sempre dalla stessa compilazione.
 if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \

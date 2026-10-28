@@ -27,3 +27,9 @@ KIND_VERSION=v0.33.0
 KIND_SHA256=aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
 KIND_NODE_MIN=kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
 KIND_NODE_MAX=kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+# cosign: la release firma SHA256SUMS (keyless, identità del workflow) e SAGE verifica la firma
+# prima di aggiornarsi da solo (ADR-0021). Versione con almeno due settimane.
+COSIGN_VERSION=v3.1.3
+COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+# Helm nell'immagine per l'aggiornamento automatico (stessa versione dell'installer).
+HELM_SHA256_AMD64=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb

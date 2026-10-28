@@ -149,6 +149,16 @@ def cmd_remediate(args: argparse.Namespace) -> int:
     return remediate.run(cfg, Kube(), args.node, plan, paths.workdir() / "remediate", args.config)
 
 
+def cmd_self_update(args: argparse.Namespace) -> int:
+    from sage import update
+    from sage.kube import Kube
+
+    cfg = config.load(args.config)
+    set_log_level(cfg)
+    kube = Kube()
+    return update.run(cfg, kube, _release(), kube.namespace)
+
+
 def cmd_recover_action(args: argparse.Namespace) -> int:
     from sage import recover
 
@@ -230,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", required=True)
     p.add_argument("--pm", required=True, choices=["apt", "dnf", "zypper"])
 
+    p = sub.add_parser("self-update", help="aggiorna SAGE alla release firmata (usato dai Job)")
+    p.add_argument("--config", required=True)
+
     p = sub.add_parser("dashboard", help="dashboard web di sola lettura")
     p.add_argument("--config", required=True)
     p.add_argument("--bind", default="127.0.0.1", help="indirizzo (predefinito solo locale)")
@@ -254,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         "controller": cmd_controller,
         "remediate": cmd_remediate,
         "recover-action": cmd_recover_action,
+        "self-update": cmd_self_update,
         "resume": cmd_resume,
         "dashboard": cmd_dashboard,
     }

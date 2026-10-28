@@ -69,6 +69,7 @@ class KubeApi(Protocol):
     def api_problems(self) -> list[str]: ...
     def post_event(self, node: str, reason: str, message: str) -> None: ...
     def job_message(self, job: str) -> str | None: ...
+    def append_text(self, name: str, key: str, text: str) -> None: ...
 
 
 def encode(data: dict[str, Any]) -> str:
@@ -160,6 +161,18 @@ class Kube:
         if cm is None or not cm.data:
             return None
         return cm.data.get(key)
+
+    def append_text(self, name: str, key: str, text: str) -> None:
+        """Aggiunge testo a una chiave di una ConfigMap (lo storico delle modifiche)."""
+        cm = self._read_cm(name)
+        if cm is None:
+            body = self._client.V1ConfigMap(
+                metadata=self._client.V1ObjectMeta(name=name), data={key: text}
+            )
+            self.core.create_namespaced_config_map(self.namespace, body)
+            return
+        old = (cm.data or {}).get(key, "")
+        self.core.patch_namespaced_config_map(name, self.namespace, {"data": {key: old + text}})
 
     def list_jobs(self, label_selector: str) -> list[JobInfo]:
         jobs = []

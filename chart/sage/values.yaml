@@ -59,6 +59,12 @@ config:
     protected_modules: []
     idle_scans_required: 3  # "inutilizzato" solo dopo tanti controlli consecutivi...
     idle_days_required: 7   # ...e tanti giorni
+  # Aggiornamento automatico alle release firmate (ADR-0021): solo in pausa, una volta ogni
+  # check_hours; se il SAGE nuovo non lavora, rollback. channel: off | patch | minor.
+  # repository lo scrive l'installer (owner/nome delle release); senza, resta spento.
+  self_update:
+    channel: minor
+    check_hours: 24
   # alerts:
   #   webhook_url: https://hooks.example/x  # POST JSON per ogni avviso; vuoto = eventi K8s
 

@@ -107,6 +107,20 @@ class SourcesConfig:
 
 
 @dataclass(frozen=True)
+class SelfUpdateConfig:
+    """SAGE si aggiorna da solo alle nuove release firmate (ADR-0021)."""
+
+    # off | patch (solo 0.8.x) | minor (anche 0.9.0; mai una versione maggiore da solo).
+    channel: str = "minor"
+    # Ogni quante ore il controllore guarda se c'è una release nuova (solo in pausa).
+    check_hours: int = 24
+    # Repository GitHub delle release (owner/nome). La scrive l'installer; senza,
+    # l'aggiornamento automatico resta spento.
+    repository: str | None = None
+    api_url: str = "https://api.github.com"
+
+
+@dataclass(frozen=True)
 class AlertsConfig:
     # URL a cui SAGE manda un POST JSON per ogni avviso; vuoto = solo Eventi Kubernetes.
     webhook_url: str | None = None
@@ -144,6 +158,7 @@ class Config:
     # nome del nodo -> elenco. Contano come necessari anche quando non girano.
     extra_services: dict[str, tuple[str, ...]] = field(default_factory=dict)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
+    self_update: SelfUpdateConfig = field(default_factory=SelfUpdateConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
 
     def group(self, name: str) -> NodeGroup | None:
@@ -186,6 +201,7 @@ def parse(raw: dict[str, Any]) -> Config:
     extra_services = _parse_extra_services(raw.get("extra_services"), errors)
     controller = _parse_controller(raw.get("controller") or {}, errors)
     alerts = _parse_alerts(raw.get("alerts"), errors)
+    self_update = _parse_self_update(raw.get("self_update") or {}, errors)
 
     group_names = {g.name for g in groups}
     for ep in llm.endpoints:
@@ -205,6 +221,7 @@ def parse(raw: dict[str, Any]) -> Config:
         extra_services=extra_services,
         controller=controller,
         alerts=alerts,
+        self_update=self_update,
     )
 
 
@@ -383,6 +400,30 @@ def _parse_alerts(raw: Any, errors: list[str]) -> AlertsConfig:
     webhook_url = raw.get("webhook_url") or None
     _url(webhook_url, where, errors)
     return AlertsConfig(webhook_url=webhook_url)
+
+
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _parse_self_update(raw: Any, errors: list[str]) -> SelfUpdateConfig:
+    where = "self_update"
+    if not isinstance(raw, dict):
+        errors.append(f"{where}: deve essere un oggetto")
+        return SelfUpdateConfig()
+    channel = raw.get("channel", "minor")
+    if channel not in ("off", "patch", "minor"):
+        errors.append(f"{where}.channel: off, patch o minor")
+    repository = raw.get("repository") or None
+    if repository is not None and not (isinstance(repository, str) and REPO_RE.match(repository)):
+        errors.append(f"{where}.repository: nella forma owner/nome")
+    api_url = raw.get("api_url") or "https://api.github.com"
+    _url(api_url, f"{where}.api_url", errors)
+    return SelfUpdateConfig(
+        channel=channel,
+        check_hours=_int(raw, "check_hours", 24, where, errors, minimum=1),
+        repository=repository,
+        api_url=api_url.rstrip("/"),
+    )
 
 
 def _parse_extra_services(raw: Any, errors: list[str]) -> dict[str, tuple[str, ...]]:

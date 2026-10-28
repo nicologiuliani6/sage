@@ -24,3 +24,4 @@ si segna come sostituita e se ne scrive una nuova.
 | [0017](0017-piu-distribuzioni.md) | Più distribuzioni (dnf, zypper, apt), stesso flusso |
 | [0018](0018-ogni-cluster-senza-rompere.md) | SAGE va bene su ogni cluster, senza rompere niente |
 | [0019](0019-quarantena-del-nodo.md) | Quarantena del nodo, non fermo del cluster |
+| [0021](0021-aggiornamento-automatico.md) | SAGE si aggiorna da solo, solo con release firmate e se lavora |
