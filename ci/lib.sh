@@ -24,6 +24,14 @@ install_opa() {
   export SAGE_OPA_BIN="$TOOLS/opa"
 }
 
+install_kind() {
+  curl -fsSL -o "$TOOLS/kind" \
+    "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+  echo "${KIND_SHA256}  $TOOLS/kind" | sha256sum -c -
+  chmod +x "$TOOLS/kind"
+  export PATH="$TOOLS:$PATH"
+}
+
 # Esegue un comando; se fallisce, ne riporta le ultime righe di output in un'annotazione.
 checked() {
   local out rc=0

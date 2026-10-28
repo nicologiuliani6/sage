@@ -2,8 +2,11 @@
 
 import copy
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import pytest
 from kubernetes import client
+from kubernetes.client import rest
 from kubernetes.client.exceptions import ApiException
 
 from sage.kube import Kube
@@ -58,32 +61,40 @@ def test_release_does_not_touch_someone_elses_lease():
     k.release_lease("assente", "vecchio")  # niente errori se il Lease non c'è
 
 
-class FakeApiClient:
-    def __init__(self, body, status=200, error=None):
-        self.body, self.status, self.error = body, status, error
+def real_client(body=b"", status=200, error=None):
+    """Il vero ApiClient di `kubernetes`, con finto solo il livello HTTP: se la firma del
+    client cambia (è successo con la versione 37) il test se ne accorge."""
+    api = client.ApiClient(client.Configuration(host="https://api.example.invalid"))
+    calls = []
 
-    def __call__(self):
-        return self
+    def request(method, url, **kw):
+        calls.append((method, url))
+        if error:
+            raise error
+        return rest.RESTResponse(SimpleNamespace(status=status, reason="", data=body))
 
-    def call_api(self, path, method, **kw):
-        if self.error:
-            raise self.error
-        assert path == "/readyz" and ("verbose", "true") in kw["query_params"]
-        return self.body, self.status, {}
+    api.rest_client.request = request
+    return SimpleNamespace(ApiClient=lambda: api), calls
 
 
 def test_api_problems_reads_readyz():
     k = Kube.__new__(Kube)
-    healthy = "[+]ping ok\n[+]etcd ok\n[+]etcd-readiness ok\nreadyz check passed\n"
-    k._client = type("C", (), {"ApiClient": FakeApiClient(healthy)})
+    healthy = b"[+]ping ok\n[+]etcd ok\n[+]etcd-readiness ok\nreadyz check passed\n"
+    k._client, calls = real_client(healthy)
     assert k.api_problems() == []
-    sick = "[+]ping ok\n[-]etcd failed: reason withheld\n[-]etcd-readiness failed\n"
-    k._client = type("C", (), {"ApiClient": FakeApiClient(sick, 500)})
+    assert calls == [("GET", "https://api.example.invalid/readyz?verbose=true")]
+    sick = b"[+]ping ok\n[-]etcd failed: reason withheld\n[-]etcd-readiness failed\n"
+    k._client, _ = real_client(sick, 500)
     assert k.api_problems() == ["etcd", "etcd-readiness"]
-    # come il client vero: un 500 diventa un'eccezione con il corpo
-    error = ApiException(status=500)
-    error.body = sick.encode()
-    k._client = type("C", (), {"ApiClient": FakeApiClient("", error=error)})
-    assert k.api_problems() == ["etcd", "etcd-readiness"]
-    k._client = type("C", (), {"ApiClient": FakeApiClient("", error=TimeoutError())})
+    k._client, _ = real_client(b"", 503)
+    assert k.api_problems() == ["readyz HTTP 503"]
+    k._client, _ = real_client(error=TimeoutError())
     assert k.api_problems() == ["API non raggiungibile (TimeoutError)"]
+
+
+def test_api_problems_programming_error_is_not_api_down():
+    """Un errore di SAGE (TypeError) non deve diventare "API giù" per sempre."""
+    k = Kube.__new__(Kube)
+    k._client, _ = real_client(error=TypeError("firma cambiata"))
+    with pytest.raises(TypeError):
+        k.api_problems()

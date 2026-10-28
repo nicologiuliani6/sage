@@ -67,7 +67,7 @@ function renderMeta(d) {
   replace(
     "meta",
     d.dry_run ? badge("info", "SIMULAZIONE") : badge("warning", "VIVO: modifica i nodi"),
-    d.controller.halted ? badge("critical", "FERMO") : null,
+    d.controller.quarantined.length ? badge("warning", `QUARANTENA ${d.controller.quarantined.length}`) : null,
     el("span", {}, "controllore ", el("b", {}, d.controller.text)),
     d.controller.cycle ? el("span", {}, `giro ${d.controller.cycle} `, el("b", {}, `${d.controller.done}/${d.controller.queue} nodi`)) : null,
     el("span", {}, "ultimo controllo ", el("b", {}, when(d.report_at))),

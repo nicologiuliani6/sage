@@ -145,8 +145,13 @@ def test_kube_calls_retry_on_api_errors():
     riuscito farebbe annullare l'aggiornamento dal rescue."""
 
     play = yaml.safe_load((Path(__file__).parents[1] / "ansible" / "remediate.yml").read_text())[0]
-    drains = [t for t in _tasks(play["tasks"]) if "kubernetes.core.k8s_drain" in t]
-    assert len(drains) == 4
-    for t in drains:
+    # Tutte le scritture verso l'API: cordon, drain, uncordon e segno del cordon.
+    writes = [
+        t
+        for t in _tasks(play["tasks"])
+        if "kubernetes.core.k8s_drain" in t or "kubernetes.core.k8s" in t
+    ]
+    assert len(writes) >= 9
+    for t in writes:
         assert t["until"] == f"{t['register']} is succeeded", t["name"]
         assert t["retries"] >= 3, t["name"]

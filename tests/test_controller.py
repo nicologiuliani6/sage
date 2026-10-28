@@ -184,38 +184,157 @@ def test_scan_job_lost_is_relaunched_then_gives_up():
     assert ctl.load()["cycle"]["phase"] == "pause"
 
 
-def test_failed_remediation_stops_everything_until_resume():
+def test_failed_canary_quarantines_node_and_stops_group():
     cluster = Cluster()
     ctl = make(cluster)
-    ctl.step(T0)
-    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": PLAN, "w3": EMPTY, "m1": EMPTY})
-    ctl.step(T0)
+    assert "controllo completo" in ctl.step(T0)
+    assert "controllo in corso" in ctl.step(T0)
+    plans = {"w1": PLAN, "w2": PLAN, "w3": PLAN, "m1": PLAN}
+    msg = run_scan(cluster, ctl, T0 + timedelta(minutes=1), plans)
+    # canary w1 prima (base_config: canary w1), poi w2, w3, il master per ultimo
+    assert "w1, w2, w3, m1" in msg
+    t = T0 + timedelta(minutes=2)
+    assert "avviata su w1" in ctl.step(t)
+    assert "in corso su w1" in ctl.step(t + timedelta(minutes=1))
     cluster.finish(last_fix(cluster), ok=False)
-    assert "FERMO" in ctl.step(T0)
-    assert "FERMO" in ctl.step(T0 + timedelta(hours=5))
-    assert remediated(cluster) == ["w1"]  # nessun altro nodo
-    cluster.flags.add("sage-resume")
-    assert "ripreso" in ctl.step(T0 + timedelta(hours=6))
-    assert "avviata su w2" in ctl.step(T0 + timedelta(hours=6))
-    # Il nodo fallito viene ritentato al giro dopo: il tentativo fallito non conta come fatto.
-    cluster.finish(last_fix(cluster))
-    for _ in range(4):  # w2 riuscito, w3 e m1 niente da fare, giro completato
-        ctl.step(T0 + timedelta(hours=7))
-    assert ctl.load()["cycle"]["phase"] == "pause"
-    later = T0 + timedelta(hours=8)
-    assert "fine della pausa" in ctl.step(later)
-    run_scan(cluster, ctl, later, {"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": EMPTY})
-    assert "avviata su w1" in ctl.step(later)
+    # Il canary fallisce: quarantena del nodo e gruppo fermato
+    msg = ctl.step(t)
+    assert "in quarantena fino a" in msg
+    assert "gruppo worker fermo" in msg
+    assert remediated(cluster) == ["w1"]  # nessun altro nodo avviato
+
+    # I nodi successivi del gruppo vengono saltati
+    assert "saltato: gruppo worker fermo" in ctl.step(t)
+    assert "saltato: gruppo worker fermo" in ctl.step(t)
+
+    # Il master viene avviato
+    assert "avviata su m1" in ctl.step(t)
+
+    # Lo stato è corretto
+    doc = ctl.load()
+    assert doc["halted"] is False
+    assert "failures" in doc["nodes"]["w1"]
+    assert "retry_after" in doc["nodes"]["w1"]
+    assert "worker" in doc["groups"]
 
 
-def test_vanished_remediation_job_stops_everything():
+def test_vanished_remediation_job_quarantines_node():
     cluster = Cluster()
     ctl = make(cluster)
     ctl.step(T0)
     run_scan(cluster, ctl, T0, {"w1": PLAN})
     ctl.step(T0)
     cluster.jobs.clear()
-    assert "FERMO" in ctl.step(T0 + timedelta(minutes=10))
+    msg = ctl.step(T0 + timedelta(minutes=10))
+    # Il Job è scomparso: quarantena del nodo
+    assert "scomparsa" in msg
+    assert "in quarantena" in msg
+    assert "FERMO" not in msg
+
+
+def next_cycle(cluster, ctl, t, plans):
+    """Chiude il giro in corso (i nodi rimasti vengono saltati) e ne avvia uno nuovo a t."""
+    for _ in range(50):
+        if ctl.load()["cycle"]["phase"] == "pause":
+            break
+        ctl.step(t)
+    cluster.flags.add("sage-scan-now")
+    ctl.step(t)
+    return run_scan(cluster, ctl, t, plans)
+
+
+def step_until(ctl, t, text):
+    for _ in range(20):
+        msg = ctl.step(t)
+        if text in msg:
+            return msg
+    raise AssertionError(f"mai visto: {text}")
+
+
+def test_quarantine_backoff_doubles():
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    plans = {"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": EMPTY}
+    run_scan(cluster, ctl, T0, plans)
+    ctl.step(T0)
+    cluster.finish(last_fix(cluster), ok=False)
+    assert "in quarantena fino a" in ctl.step(T0)
+    assert ctl.load()["nodes"]["w1"]["retry_after"] == (T0 + timedelta(hours=1)).isoformat()
+    # Prima della fine dell'attesa il nodo (e il suo gruppo) non si tocca.
+    t = T0 + timedelta(minutes=30)
+    next_cycle(cluster, ctl, t, plans)
+    assert "fermo" in ctl.step(t) and remediated(cluster) == ["w1"]
+    # Dopo l'attesa si ritenta; un secondo errore raddoppia l'attesa.
+    t = T0 + timedelta(hours=2)
+    next_cycle(cluster, ctl, t, plans)
+    assert "avviata su w1" in ctl.step(t)
+    cluster.finish(last_fix(cluster), ok=False)
+    ctl.step(t)
+    assert ctl.load()["nodes"]["w1"]["retry_after"] == (t + timedelta(hours=2)).isoformat()
+
+
+def test_non_canary_failure_below_quota_does_not_stop_group():
+    nodes = [node(f"w{i:02d}") for i in range(1, 13)] + [node("m1", master=True)]
+    cluster = Cluster(nodes)
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {n.name: PLAN for n in nodes})
+    assert "avviata su w01" in ctl.step(T0)
+    cluster.finish(last_fix(cluster))
+    assert ctl.step(T0) == "w01: remediation riuscita"
+    assert "avviata su w02" in ctl.step(T0)
+    cluster.finish(last_fix(cluster), ok=False)
+    msg = ctl.step(T0)
+    assert "w02: remediation fallita" in msg and "gruppo" not in msg  # 1 errore su 12
+    assert "avviata su w03" in ctl.step(T0)
+    cluster.finish(last_fix(cluster), ok=False)
+    assert "gruppo worker fermo" in ctl.step(T0)  # 2 errori: quota ceil(12 * 10%) = 2
+
+
+def test_master_failure_stops_master_group():
+    nodes = [node("w1"), node("m1", master=True), node("m2", master=True)]
+    cluster = Cluster(nodes)
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": EMPTY, "m1": PLAN, "m2": PLAN})
+    step_until(ctl, T0, "avviata su m1")
+    cluster.finish(last_fix(cluster), ok=False)
+    assert "gruppo master fermo" in ctl.step(T0)
+    assert "m2: saltato: gruppo master fermo" in ctl.step(T0)
+
+
+def test_success_clears_quarantine():
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    plans = {"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": EMPTY}
+    run_scan(cluster, ctl, T0, plans)
+    ctl.step(T0)
+    cluster.finish(last_fix(cluster), ok=False)
+    ctl.step(T0)
+    t = T0 + timedelta(hours=2)
+    next_cycle(cluster, ctl, t, plans)
+    assert "avviata su w1" in ctl.step(t)
+    cluster.finish(last_fix(cluster))
+    assert "w1: remediation riuscita" in ctl.step(t)
+    doc = ctl.load()
+    assert "failures" not in doc["nodes"]["w1"] and "retry_after" not in doc["nodes"]["w1"]
+    assert "worker" not in doc["groups"]
+
+
+def test_sage_cordon_is_retried_human_cordon_is_not():
+    labels = {"sage.io/group": "worker"}
+    sage = Node("w1", labels, "192.0.2.1", True, True, {"sage.io/cordoned": "true"})
+    human = Node("w2", labels, "192.0.2.2", True, True)
+    cluster = Cluster([sage, human])
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": PLAN})
+    assert "avviata su w1" in ctl.step(T0)
+    cluster.finish(last_fix(cluster))
+    ctl.step(T0)
+    assert "w2: saltato: nodo non Ready o in cordon" in ctl.step(T0)
 
 
 def test_job_creation_timeout_retries_instead_of_stopping():
@@ -260,15 +379,60 @@ def test_job_created_despite_timeout_is_followed():
     assert len(remediated(cluster)) == 1
 
 
-def test_unready_and_unreached_nodes_are_skipped_not_waited():
-    cluster = Cluster([node("w1"), node("w2", ready=False), node("w3", cordon=True)])
+def test_legacy_halted_state_becomes_quarantine():
+    """Uno stato salvato dalla 0.6 con halted=True diventa quarantena del nodo fallito."""
+    cluster = Cluster()
+    # Prepara il vecchio stato con halted=True
+    cluster.store["sage-controller"] = {
+        "halted": True,
+        "halt_reason": "vecchio stato",
+        "nodes": {"w1": {"status": "failed"}},
+        "cycle": None,
+    }
+    ctl = make(cluster)
+
+    # Carica lo stato: deve diventare quarantena
+    doc = ctl.load()
+    assert doc["halted"] is False
+    assert "failures" in doc["nodes"]["w1"]
+    assert "retry_after" in doc["nodes"]["w1"]
+
+
+def test_resume_clears_quarantine():
+    """dopo un fallimento di w1, flag 'sage-resume' e un passo: messaggio con 'quarantene azzerate',
+    doc['nodes']['w1'] senza retry_after, doc['groups'] vuoto."""
+    cluster = Cluster()
     ctl = make(cluster)
     ctl.step(T0)
-    run_scan(cluster, ctl, T0, {"w1": EMPTY, "w2": PLAN, "w3": PLAN})
-    cluster.nodes.append(node("w4"))  # aggiunto dopo il controllo: non è in coda
-    msgs = [ctl.step(T0) for _ in range(4)]
-    assert msgs[1].startswith("w2: saltato") and msgs[2].startswith("w3: saltato")
-    assert "giro completato" in msgs[3] and remediated(cluster) == []
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": PLAN, "w3": EMPTY, "m1": EMPTY})
+    ctl.step(T0)
+
+    # w1 fallisce
+    cluster.finish(last_fix(cluster), ok=False)
+    msg = ctl.step(T0)
+    assert "in quarantena" in msg
+
+    # Flag di resume e passo
+    cluster.flags.add("sage-resume")
+    msg = ctl.step(T0)
+    assert "quarantene azzerate" in msg
+
+    # Lo stato è corretto
+    doc = ctl.load()
+    assert "retry_after" not in doc["nodes"]["w1"]
+    assert doc["groups"] == {}
+
+
+def test_dry_run_simulates_and_keeps_cycling():
+    cluster = Cluster()
+    ctl = make(cluster, dry_run=True, pause=0)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": PLAN})
+    msgs = [ctl.step(T0) for _ in range(5)]
+    assert msgs[0].startswith("w1: simulato") and msgs[3].startswith("m1: simulato")
+    assert "giro completato" in msgs[4]
+    assert remediated(cluster) == []
+    assert "controllo completo" in ctl.step(T0 + timedelta(seconds=1))
 
 
 def test_node_without_report_is_skipped():
@@ -297,18 +461,6 @@ def test_same_advisories_after_success_are_not_repeated():
     assert remediated(cluster) == ["w1"]
 
 
-def test_dry_run_simulates_and_keeps_cycling():
-    cluster = Cluster()
-    ctl = make(cluster, dry_run=True, pause=0)
-    ctl.step(T0)
-    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": PLAN})
-    msgs = [ctl.step(T0) for _ in range(5)]
-    assert msgs[0].startswith("w1: simulato") and msgs[3].startswith("m1: simulato")
-    assert "giro completato" in msgs[4]
-    assert remediated(cluster) == []
-    assert "controllo completo" in ctl.step(T0 + timedelta(seconds=1))
-
-
 def test_scan_now_flag_ends_the_pause():
     cluster = Cluster([node("w1")])
     ctl = make(cluster, pause=600)
@@ -319,6 +471,17 @@ def test_scan_now_flag_ends_the_pause():
     assert "in pausa" in ctl.step(T0 + timedelta(minutes=1))
     cluster.flags.add("sage-scan-now")
     assert "richiesto a mano" in ctl.step(T0 + timedelta(minutes=2))
+
+
+def test_unready_and_unreached_nodes_are_skipped_not_waited():
+    cluster = Cluster([node("w1"), node("w2", ready=False), node("w3", cordon=True)])
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": EMPTY, "w2": PLAN, "w3": PLAN})
+    cluster.nodes.append(node("w4"))  # aggiunto dopo il controllo: non è in coda
+    msgs = [ctl.step(T0) for _ in range(4)]
+    assert msgs[1].startswith("w2: saltato") and msgs[2].startswith("w3: saltato")
+    assert "giro completato" in msgs[3] and remediated(cluster) == []
 
 
 def test_steps_pass_idle_nodes_together():

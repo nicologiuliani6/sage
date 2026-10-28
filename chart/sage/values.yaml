@@ -45,6 +45,12 @@ config:
     max_calls_per_run: 100
     min_interval_seconds: 0
     endpoints: []           # vuoto = solo regole deterministiche
+    # esempio:
+    # - name: locale-primario
+    #   base_url: http://vllm.llm.svc:8000/v1
+    #   model: openai/gpt-oss-120b
+    #   hosted_in_group: gpu-llm
+    #   node_data: true       # l'endpoint può ricevere dati dei nodi (ADR-0004)
   groups: []                # OBBLIGATORIO: almeno un gruppo di nodi
   sources:
     osv_url: https://api.osv.dev/v1   # Debian e Ubuntu: advisory e CVE (mirror interno ammesso)

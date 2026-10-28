@@ -24,6 +24,7 @@
 #   sage_kube                false = nessun cordon/drain/controllo via API (emergenza)
 #   sage_light               true = solo blocchi di moduli: niente cordon, drain né riavvio
 #   sage_reboot_pending      true = riavvio in sospeso (aggiornamenti già installati)
+#   sage_config_path         configurazione di SAGE per scegliere il recupero (vuota: nessuno)
 - name: Remediation SAGE
   hosts: all
   gather_facts: false
@@ -46,6 +47,7 @@
     sage_health_urls: []
     sage_denylist_file: /etc/modprobe.d/sage-denylist.conf
     sage_applied: false
+    sage_config_path: ""
     # Comandi per gestore di pacchetti. Le istantanee danno righe "nome=versione".
     sage_snapshot_cmd:
       zypper: ["rpm", "-qa", "--qf", "%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n"]
@@ -121,6 +123,25 @@
           delay: 10
           when: sage_disrupt | bool
 
+        # Il segno dice che il cordon è di SAGE: solo questi nodi SAGE può riprendere
+        # (ADR-0019); un cordon messo da una persona non si tocca.
+        - name: Segna il cordon di SAGE
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: "true"
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_disrupt | bool
+
         - name: Drain
           kubernetes.core.k8s_drain:
             name: "{{ sage_node_name }}"
@@ -173,30 +194,97 @@
         # una può essere incompatibile con quella richiesta da un'altra (es. python3 e
         # python-unversioned-command su Rocky 9). Si portano i pacchetti delle advisory alla
         # versione più recente, che è coerente e contiene tutte le correzioni.
-        - name: Applica le advisory di sicurezza
-          ansible.builtin.command:
-            argv: "{{ ['dnf', '-y', 'upgrade'] + (sage_update_advisories | map('regex_replace', '^', '--advisory=') | list) }}"
-          when: sage_pm == 'dnf' and sage_update_advisories | length > 0
-          register: sage_update
-          changed_when: "'Nothing to do' not in sage_update.stdout"
-
-        # 103: zypper ha aggiornato se stesso e va rilanciato; 102: serve un riavvio.
-        - name: Applica le patch di sicurezza
-          ansible.builtin.command:
-            argv: "{{ ['zypper', '-n', 'install', '-t', 'patch'] + sage_update_advisories }}"
-          when: sage_pm == 'zypper' and sage_update_advisories | length > 0
-          register: sage_zypper
-          until: sage_zypper.rc != 103
-          retries: 3
-          delay: 1
-          failed_when: sage_zypper.rc not in [0, 102, 103]
-          changed_when: true
+        # zypper: 103 = ha aggiornato se stesso e va rilanciato; 102 = serve un riavvio.
+        - name: Comando di aggiornamento
+          ansible.builtin.set_fact:
+            sage_update_argv: >-
+              {{ (['dnf', '-y', 'upgrade'] + (sage_update_advisories | map('regex_replace', '^', '--advisory=') | list))
+                 if sage_pm == 'dnf' else
+                 (['zypper', '-n', 'install', '-t', 'patch'] + sage_update_advisories)
+                 if sage_pm == 'zypper' else
+                 (['apt-get', '-y', 'install', '--only-upgrade', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold'] + sage_update_packages) }}
+            sage_update_ok: "{{ [0, 102] if sage_pm == 'zypper' else [0] }}"
+          when: >-
+            (sage_pm in ['dnf', 'zypper'] and sage_update_advisories | length > 0)
+            or (sage_pm == 'apt' and sage_update_packages | length > 0)
 
         - name: Aggiorna i pacchetti di sicurezza
           ansible.builtin.command:
-            argv: "{{ ['apt-get', '-y', 'install', '--only-upgrade', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold'] + sage_update_packages }}"
-          when: sage_pm == 'apt' and sage_update_packages | length > 0
-          changed_when: true
+            argv: "{{ sage_update_argv }}"
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: sage_update
+          until: sage_update.rc != 103
+          retries: 3
+          delay: 1
+          failed_when: false
+          changed_when: "'Nothing to do' not in sage_update.stdout"
+          when: sage_update_argv is defined
+
+        # Aggiornamento fallito: un'azione da un catalogo chiuso (sage recover-action: regole
+        # fisse, poi solo un LLM interno al cluster), un nuovo tentativo, poi rollback (ADR-0019).
+        - name: Recupero dopo un aggiornamento fallito
+          when: sage_update_argv is defined and sage_update.rc not in sage_update_ok
+          block:
+            - name: Scegli il recupero
+              ansible.builtin.command:
+                argv: [sage, recover-action, --config, "{{ sage_config_path }}", --pm, "{{ sage_pm }}"]
+                stdin: "{{ [sage_update.stdout | default(''), sage_update.stderr | default('')] | join(' ') }}"
+              register: sage_recover
+              # Senza configurazione (playbook lanciato a mano dal bastion) niente recupero.
+              when: sage_config_path | length > 0
+              changed_when: false
+              delegate_to: localhost
+              become: false
+
+            - name: Azione scelta
+              ansible.builtin.set_fact:
+                sage_recover_action: "{{ sage_recover.stdout | default('none') | trim }}"
+
+            - name: Nessun recupero noto
+              ansible.builtin.fail:
+                msg: "aggiornamento fallito (codice {{ sage_update.rc }}), nessun recupero noto: {{ sage_update.stderr | default('') | trim | truncate(300) }}"
+              when: sage_recover_action == 'none'
+
+            - name: Recupero - attendi (rete o mirror)
+              ansible.builtin.pause:
+                seconds: 60
+              when: sage_recover_action == 'retry'
+
+            - name: Recupero - completa la configurazione di dpkg
+              ansible.builtin.command: dpkg --configure -a
+              environment:
+                DEBIAN_FRONTEND: noninteractive
+              changed_when: true
+              when: sage_recover_action == 'dpkg_configure'
+
+            - name: Recupero - ripara le dipendenze
+              ansible.builtin.command:
+                argv: "{{ ['apt-get', '-y', '-f', 'install', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold'] if sage_pm == 'apt' else ['zypper', '-n', 'verify'] }}"
+              environment:
+                DEBIAN_FRONTEND: noninteractive
+              changed_when: true
+              when: sage_recover_action == 'fix_broken'
+
+            - name: Recupero - libera spazio (cache dei pacchetti e journal)
+              ansible.builtin.shell: >-
+                {{ {'apt': 'apt-get clean', 'dnf': 'dnf clean all', 'zypper': 'zypper -n clean -a'}[sage_pm] }};
+                journalctl --vacuum-size=200M || true
+              changed_when: true
+              when: sage_recover_action == 'clean_cache'
+
+            # Gestore occupato (es. unattended-upgrades): si riprova fino a 10 minuti.
+            - name: Aggiorna i pacchetti di sicurezza (dopo il recupero)
+              ansible.builtin.command:
+                argv: "{{ sage_update_argv }}"
+              environment:
+                DEBIAN_FRONTEND: noninteractive
+              register: sage_update
+              until: sage_update.rc in sage_update_ok
+              retries: "{{ 20 if sage_recover_action == 'wait_lock' else 1 }}"
+              delay: 30
+              failed_when: sage_update.rc not in sage_update_ok
+              changed_when: true
 
         - name: Rimuovi i pacchetti inutilizzati
           ansible.builtin.command:
@@ -315,6 +403,23 @@
           delay: 10
           when: sage_disrupt | bool
 
+        - name: Togli il segno del cordon
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: null
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_disrupt | bool
+
         - name: Controlli di salute del gruppo
           ansible.builtin.uri:
             url: "{{ item }}"
@@ -385,6 +490,23 @@
           delay: 10
           when: sage_disrupt | bool and not sage_modified | bool
 
+        - name: Nulla era stato modificato - togli il segno del cordon
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: null
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_disrupt | bool and not sage_modified | bool
+
         - name: Annulla la transazione dnf di SAGE
           ansible.builtin.command: "dnf -y history undo {{ sage_tx_id }}"
           vars:
@@ -428,9 +550,64 @@
           loop: "{{ ['install', 'blacklist'] | product(sage_denylist_modules) | list }}"
           when: sage_modified | bool
 
+        # Rollback riuscito e nodo Ready: il nodo torna in servizio e SAGE lo ritenta più avanti
+        # (quarantena, ADR-0019). Altrimenti resta in cordon.
+        - name: Nodo sano dopo il rollback?
+          kubernetes.core.k8s_info:
+            kind: Node
+            name: "{{ sage_node_name }}"
+          register: sage_node_after
+          delegate_to: localhost
+          become: false
+          until: sage_node_after.resources | default([]) | length == 1
+          retries: 6
+          delay: 10
+          failed_when: false
+          when: sage_disrupt | bool and sage_modified | bool
+
+        - name: Esito del rollback
+          ansible.builtin.set_fact:
+            sage_back_in_service: >-
+              {{ sage_disrupt | bool and sage_modified | bool
+                 and (sage_undo is not defined or sage_undo.rc is not defined or sage_undo.rc == 0)
+                 and (sage_node_after.resources | default([]) | map(attribute='status.conditions')
+                      | first | default([]) | selectattr('type', 'equalto', 'Ready')
+                      | map(attribute='status') | first | default('False')) == 'True' }}
+
+        - name: Rollback riuscito - rimetti il nodo in servizio
+          kubernetes.core.k8s_drain:
+            name: "{{ sage_node_name }}"
+            state: uncordon
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 12
+          delay: 10
+          when: sage_back_in_service | bool
+
+        - name: Rollback riuscito - togli il segno del cordon
+          kubernetes.core.k8s:
+            kind: Node
+            name: "{{ sage_node_name }}"
+            state: patched
+            definition:
+              metadata:
+                annotations:
+                  sage.io/cordoned: null
+          delegate_to: localhost
+          become: false
+          register: sage_kube_op
+          until: sage_kube_op is succeeded
+          retries: 6
+          delay: 10
+          when: sage_back_in_service | bool
+
         - name: Fallimento
           ansible.builtin.fail:
             msg: >-
-              {{ 'Remediation fallita dopo aver modificato il nodo: rollback eseguito, nodo lasciato in cordon per un controllo manuale.'
+              {{ 'Remediation fallita: rollback eseguito, nodo di nuovo in servizio.'
+                 if sage_back_in_service | default(false) | bool else
+                 'Remediation fallita dopo aver modificato il nodo: rollback eseguito, nodo lasciato in cordon (quarantena).'
                  if sage_modified | bool else
                  'Remediation fallita senza modificare il nodo: nodo rimesso in servizio.' }}

@@ -6,11 +6,15 @@ import base64
 import gzip
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 STATE_KEY = "data.json.gz"
+
+
+# Messa da remediate.yml sui nodi che SAGE mette in cordon (ADR-0019).
+CORDON_ANNOTATION = "sage.io/cordoned"
 
 
 @dataclass(frozen=True)
@@ -20,10 +24,16 @@ class Node:
     internal_ip: str | None
     ready: bool
     unschedulable: bool
+    annotations: dict[str, str] = field(default_factory=dict)
 
     @property
     def control_plane(self) -> bool:
         return "node-role.kubernetes.io/control-plane" in self.labels
+
+    @property
+    def cordoned_by_sage(self) -> bool:
+        """In cordon per mano di SAGE (remediate.yml lo segna): SAGE lo può riprendere."""
+        return self.unschedulable and self.annotations.get(CORDON_ANNOTATION) == "true"
 
 
 @dataclass(frozen=True)
@@ -103,6 +113,7 @@ class Kube:
                     internal_ip=ip,
                     ready=ready,
                     unschedulable=bool(n.spec.unschedulable),
+                    annotations=dict(n.metadata.annotations or {}),
                 )
             )
         return sorted(nodes, key=lambda x: x.name)
@@ -188,22 +199,24 @@ class Kube:
     def api_problems(self) -> list[str]:
         """Controlli di /readyz dell'apiserver che non passano (etcd compreso); [] se è
         sano. /readyz è leggibile da tutti (ClusterRole system:public-info-viewer)."""
+        api = self._client.ApiClient()
+        request = api.param_serialize(
+            method="GET",
+            resource_path="/readyz",
+            query_params=[("verbose", "true")],
+            auth_settings=["BearerToken"],
+        )
         try:
-            data, status, _ = self._client.ApiClient().call_api(
-                "/readyz",
-                "GET",
-                query_params=[("verbose", "true")],
-                auth_settings=["BearerToken"],
-                response_type="str",
-                _request_timeout=10,
-            )
-        except Exception as exc:  # noqa: BLE001 (connessione, timeout, 5xx)
-            # Con un controllo fallito l'apiserver risponde 500: il client solleva
-            # un'eccezione che ha comunque il corpo con l'elenco dei controlli.
-            body, status = getattr(exc, "body", None), getattr(exc, "status", None)
-            if not body:
-                return [f"API non raggiungibile ({type(exc).__name__})"]
-            data = body.decode() if isinstance(body, bytes) else body
+            # Con un controllo fallito l'apiserver risponde 500: call_api non solleva,
+            # lo stato e il corpo con l'elenco dei controlli arrivano comunque.
+            response = api.call_api(*request, _request_timeout=10)
+            response.read()
+        except (TypeError, AttributeError):
+            raise  # errore di SAGE (firma del client cambiata), non un'API giù
+        except Exception as exc:  # noqa: BLE001 (connessione, timeout)
+            return [f"API non raggiungibile ({type(exc).__name__})"]
+        status = response.status
+        data = response.data.decode(errors="replace") if response.data else ""
         failed = [
             line[3:].split(" ", 1)[0] for line in str(data).splitlines() if line.startswith("[-]")
         ]
