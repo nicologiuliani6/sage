@@ -244,6 +244,15 @@ class FakeKube:
     def read_text(self, name, key):
         return HISTORY if name == "sage-history" else None
 
+    def api_problems(self):
+        return []
+
+    def list_pods(self, selector):
+        return [{"name": "sage-controller-abc", "phase": "Running", "role": "controller"}]
+
+    def pod_log(self, name, lines):
+        return f"log di {name}\n"
+
 
 @pytest.fixture
 def server(tmp_path):
@@ -297,3 +306,29 @@ def test_server_refuses_other_hosts(server):
     assert get(server, "/api/status", host="evil.example")[0] == 403
     assert get(server, "/healthz", host="10.0.0.5")[0] == 200  # sonda di Kubernetes
     assert get(server, "/../etc/passwd")[0] == 404
+
+
+def test_health_and_cycles_for_the_new_pages():
+    report = {
+        **REPORT,
+        "llm": {
+            "node6": {"calls": 3, "ok": 0, "errors": 3, "last_error": "timed out"},
+            "groq": {"calls": 2, "ok": 2, "errors": 0, "last_latency": 0.9},
+        },
+    }
+    data = status(report=report)
+    levels = {c["name"]: c["level"] for c in data["health"]["components"]}
+    assert levels["LLM node6"] == "critical" and levels["LLM groq"] == "ok"
+    servers = {s["name"]: s for s in data["health"]["servers"]}
+    assert set(servers) == {"w1", "w2", "m1"}
+    cycles = {"cycles": [{"id": 1}, {"id": 2}]}
+    assert [c["id"] for c in status(cycles=cycles)["cycles"]] == [2, 1]  # dal più recente
+
+
+def test_logs_only_for_sage_pods(server):
+    code, _, body = get(server, "/api/pods")
+    assert code == 200 and json.loads(body)[0]["name"] == "sage-controller-abc"
+    code, _, body = get(server, "/api/logs?pod=sage-controller-abc")
+    assert code == 200 and body == b"log di sage-controller-abc\n"
+    for bad in ("kube-apiserver-node1", "../x", "SAGE", ""):
+        assert get(server, f"/api/logs?pod={bad}")[0] == 404

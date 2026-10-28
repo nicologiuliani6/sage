@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
+import os
+import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -76,4 +80,42 @@ def run(
         "-e",
         f"@{vars_path}",
     ]
-    return subprocess.run(cmd, cwd=paths.ansible_dir()).returncode
+    proc = subprocess.Popen(
+        cmd, cwd=paths.ansible_dir(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    tail: collections.deque[str] = collections.deque(maxlen=400)
+    for line in proc.stdout or []:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        tail.append(line)
+    code = proc.wait()
+    if code:
+        write_termination_message(failure_message("".join(tail), code))
+    return code
+
+
+MSG_RE = re.compile(r'"msg": "((?:[^"\\]|\\.)*)"')
+
+
+def failure_message(output: str, code: int) -> str:
+    """Il motivo leggibile del fallimento: l'ultimo `msg` di Ansible (il passo Fallimento del
+    rescue dice cosa è successo), altrimenti il codice d'uscita."""
+    found = MSG_RE.findall(output)
+    if not found:
+        return f"remediation fallita (codice {code})"
+    try:
+        text = json.loads(f'"{found[-1]}"')
+    except json.JSONDecodeError:
+        text = found[-1]
+    return " ".join(text.split())[:1000]
+
+
+def write_termination_message(text: str) -> None:
+    """Kubernetes lo mette nello stato del pod: il controllore lo legge e la dashboard lo
+    mostra (vale anche dove i log dei pod non si possono leggere)."""
+    path = os.environ.get("SAGE_TERMINATION_LOG", "/dev/termination-log")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError:
+        log.warning("messaggio di terminazione non scritto: %s", text)

@@ -9,47 +9,58 @@
 </head>
 <body>
   <header class="bar">
-    <div class="brand">
+    <a class="brand" href="#/panoramica">
       <span class="logo" aria-hidden="true"></span>
-      <div>
-        <h1>SAGE</h1>
-        <p class="sub">sicurezza dei nodi, sola lettura</p>
-      </div>
-    </div>
+      <span><b>SAGE</b><small>sicurezza dei nodi · sola lettura</small></span>
+    </a>
     <div class="meta" id="meta"></div>
     <div class="live" id="live" aria-live="off"></div>
   </header>
 
+  <nav class="tabs" aria-label="Pagine">
+    <a href="#/panoramica" data-tab="panoramica">Panoramica</a>
+    <a href="#/nodi" data-tab="nodi">Nodi</a>
+    <a href="#/cve" data-tab="cve">CVE</a>
+    <a href="#/giri" data-tab="giri">Giri</a>
+    <a href="#/salute" data-tab="salute">Salute</a>
+    <a href="#/log" data-tab="log">Log</a>
+    <a href="#/storico" data-tab="storico">Storico</a>
+  </nav>
+
   <main>
     <p class="error" id="error" hidden></p>
 
-    <section aria-labelledby="h-alarms">
-      <h2 id="h-alarms">Allarmi</h2>
+    <section class="page" data-page="panoramica" aria-label="Panoramica">
       <ul class="alarms" id="alarms"></ul>
+      <div class="tiles" id="tiles"></div>
+      <div class="grid2">
+        <figure class="card" id="chart-nodes"></figure>
+        <figure class="card" id="chart-cves"></figure>
+      </div>
+      <figure class="card" id="chart-groups"></figure>
     </section>
 
-    <section class="tiles" id="tiles" aria-label="Riepilogo"></section>
-
-    <section aria-labelledby="h-waves">
-      <h2 id="h-waves">Giro</h2>
-      <p class="hint">Il controllore controlla tutti i nodi, poi li sistema uno alla volta (gruppi in ordine, canary per primo) e ricomincia.</p>
-      <div class="waves" id="waves"></div>
-      <ul class="messages" id="messages"></ul>
-    </section>
-
-    <section aria-labelledby="h-nodes">
-      <h2 id="h-nodes">Nodi</h2>
+    <section class="page" data-page="nodi" aria-label="Nodi" hidden>
+      <div class="toolbar">
+        <input type="search" id="node-search" placeholder="Cerca nodo" aria-label="Cerca nodo">
+        <select id="node-group" aria-label="Gruppo"><option value="">Tutti i gruppi</option></select>
+        <select id="node-level" aria-label="Stato">
+          <option value="">Tutti gli stati</option>
+          <option value="critical">critici</option>
+          <option value="warning">attenzione</option>
+          <option value="ok">a posto</option>
+          <option value="unknown">sconosciuti</option>
+        </select>
+      </div>
       <div class="nodes" id="nodes"></div>
     </section>
 
-    <section aria-labelledby="h-cves">
-      <div class="section-head">
-        <h2 id="h-cves">CVE</h2>
-        <div class="filters">
-          <input type="search" id="cve-search" placeholder="Cerca CVE o pacchetto" aria-label="Cerca CVE o pacchetto">
-          <select id="cve-node" aria-label="Nodo"><option value="">Tutti i nodi</option></select>
-          <label class="check"><input type="checkbox" id="cve-open" checked> solo da sistemare</label>
-        </div>
+    <section class="page" data-page="cve" aria-label="CVE" hidden>
+      <figure class="card" id="chart-cve-nodes"></figure>
+      <div class="toolbar">
+        <input type="search" id="cve-search" placeholder="Cerca CVE o pacchetto" aria-label="Cerca CVE o pacchetto">
+        <select id="cve-node" aria-label="Nodo"><option value="">Tutti i nodi</option></select>
+        <label class="check"><input type="checkbox" id="cve-open" checked> solo da sistemare</label>
       </div>
       <div class="table-wrap">
         <table>
@@ -60,15 +71,42 @@
       <p class="hint" id="cve-count"></p>
     </section>
 
-    <section aria-labelledby="h-history">
-      <h2 id="h-history">Storico delle modifiche</h2>
+    <section class="page" data-page="giri" aria-label="Giri" hidden>
+      <figure class="card" id="chart-cycles"></figure>
+      <div class="cycles" id="cycles"></div>
+    </section>
+
+    <section class="page" data-page="salute" aria-label="Salute" hidden>
+      <h2>Componenti di SAGE</h2>
+      <ul class="components" id="components"></ul>
+      <h2>Server</h2>
+      <p class="hint">Un quadrato per nodo: il colore è lo stato, il simbolo lo ripete per chi non distingue i colori.</p>
+      <div class="squares" id="squares"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Nodo</th><th>Stato</th><th>Raggiunto</th><th>Kernel</th><th>Sistema</th><th>Ultimo esito</th></tr></thead>
+          <tbody id="servers"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="page" data-page="log" aria-label="Log" hidden>
+      <div class="toolbar">
+        <select id="log-pod" aria-label="Pod"></select>
+        <label class="check"><input type="checkbox" id="log-follow" checked> segui</label>
+        <span class="hint" id="log-info"></span>
+      </div>
+      <pre class="log" id="log" tabindex="0"></pre>
+    </section>
+
+    <section class="page" data-page="storico" aria-label="Storico" hidden>
+      <h2>Modifiche a SAGE</h2>
       <ul class="history" id="history"></ul>
+      <p><a href="/api/vex" download>Scarica il VEX (OpenVEX)</a>: CVE dichiarate non affette, con la prova.</p>
     </section>
   </main>
 
-  <footer>
-    <a href="/api/vex" download>Scarica il VEX (OpenVEX)</a>
-    <span id="footer"></span>
-  </footer>
+  <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+  <footer id="footer"></footer>
 </body>
 </html>

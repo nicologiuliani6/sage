@@ -79,6 +79,7 @@ def to_json(
         "dry_run": dry_run,
         "kev_available": analysis.kev_available,
         "llm_calls": analysis.llm_calls,
+        "llm": analysis.llm_stats,
         "warnings": warnings,
         "messages": messages,
         "plans": plans,

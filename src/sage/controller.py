@@ -23,6 +23,7 @@ import os
 import signal
 import socket
 import threading
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,8 @@ QUARANTINE_FIRST = timedelta(hours=1)
 QUARANTINE_MAX = timedelta(days=7)
 # Un gruppo si ferma per il giro se fallisce il canary, un master o questa quota dei nodi.
 GROUP_FAILURE_RATIO = 0.1
+# Giri tenuti nello storico per la dashboard: 100 riassunti restano ben sotto 1 MiB.
+CYCLES_KEPT = 100
 
 
 def _iso(value: datetime) -> str:
@@ -300,9 +303,17 @@ class Controller:
             self.again = True  # il nodo dopo parte subito
             return f"{node}: remediation riuscita"
         why = "fallita" if job is not None else "scomparsa (Job cancellato?)"
-        return self._quarantine(doc, node, why, now)
+        reason = self.kube.job_message(job.name) if job is not None else None
+        if reason:
+            why = f"fallita: {reason}"
+        # Drain fermato da un PodDisruptionBudget (es. storage che tiene repliche sul nodo):
+        # il nodo non ha niente che non va, si ritenta più tardi senza fermare il gruppo.
+        blocked = bool(reason and "disruption budget" in reason)
+        return self._quarantine(doc, node, why, now, breaker=not blocked)
 
-    def _quarantine(self, doc: dict[str, Any], node: str, why: str, now: datetime) -> str:
+    def _quarantine(
+        self, doc: dict[str, Any], node: str, why: str, now: datetime, breaker: bool = True
+    ) -> str:
         """Il nodo fallito aspetta (sempre di più a ogni errore), gli altri proseguono."""
         st = doc["nodes"][node]
         cycle = doc["cycle"]
@@ -313,7 +324,7 @@ class Controller:
         cycle["results"][node] = {"outcome": OUTCOME_FAILED, "detail": why, "at": _iso(now)}
         message = f"{node}: remediation {why} (job {st['job']}), in quarantena fino a {_iso(until)}"
         alerts.notify(self.cfg, self.kube, node, "SageQuarantine", message)
-        stopped = self._group_breaker(doc, node, now)
+        stopped = self._group_breaker(doc, node, now) if breaker else ""
         if stopped:
             message += f"; {stopped}"
         log.error("%s", message)
@@ -446,7 +457,30 @@ class Controller:
         cycle["finished"] = _iso(now)
         until = now + timedelta(minutes=self.cfg.controller.pause_minutes)
         cycle["pause_until"] = _iso(until)
+        self._record_cycle(cycle, why)
         return f"giro {cycle['id']}: {why}; prossimo giro alle {_iso(until)}"
+
+    def _record_cycle(self, cycle: dict[str, Any], why: str) -> None:
+        """Riassunto del giro per la dashboard (pagina Giri): ultimi CYCLES_KEPT."""
+        results = cycle.get("results") or {}
+        summary = {
+            "id": cycle["id"],
+            "reason": cycle.get("reason"),
+            "started": cycle.get("started"),
+            "finished": cycle.get("finished"),
+            "why": why,
+            "error": cycle.get("error"),
+            "outcomes": dict(Counter(r["outcome"].split(":")[0] for r in results.values())),
+            "nodes": {
+                n: {"outcome": r["outcome"], "detail": r.get("detail")} for n, r in results.items()
+            },
+        }
+        name = f"{self.release}-cycles"
+        try:
+            cycles = (self.kube.read_json(name) or {}).get("cycles", [])
+            self.kube.write_json(name, {"cycles": (cycles + [summary])[-CYCLES_KEPT:]})
+        except Exception:  # noqa: BLE001 (lo storico non deve fermare il giro)
+            log.warning("riassunto del giro %s non salvato", cycle["id"], exc_info=True)
 
     def steps(self, now: datetime, limit: int = 100) -> list[str]:
         """Passi di fila finché non c'è da aspettare: i nodi senza niente da fare passano

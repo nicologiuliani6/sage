@@ -603,11 +603,19 @@
           delay: 10
           when: sage_back_in_service | bool
 
+        # Il messaggio finisce nella dashboard (messaggio di terminazione del Job): dice
+        # cosa è fallito, in chiaro se il nodo non è tornato dopo il riavvio.
         - name: Fallimento
           ansible.builtin.fail:
             msg: >-
-              {{ 'Remediation fallita: rollback eseguito, nodo di nuovo in servizio.'
+              {{ ('aggiornamento NON riuscito: il nodo non è ripartito dopo il riavvio. '
+                  if sage_failed_step in sage_boot_steps else '') }}{{ 'Remediation fallita: rollback eseguito, nodo di nuovo in servizio.'
                  if sage_back_in_service | default(false) | bool else
                  'Remediation fallita dopo aver modificato il nodo: rollback eseguito, nodo lasciato in cordon (quarantena).'
                  if sage_modified | bool else
                  'Remediation fallita senza modificare il nodo: nodo rimesso in servizio.' }}
+              Passo: {{ sage_failed_step }}. {{ sage_failed_msg | truncate(300) }}
+          vars:
+            sage_failed_step: "{{ ansible_failed_task.name | default('?') }}"
+            sage_failed_msg: "{{ ansible_failed_result.msg | default('') }}"
+            sage_boot_steps: ["Riavvia il nodo", "Attendi che il nodo sia Ready", "Master - attendi kube-apiserver pronto"]

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
+import urllib.parse
 from collections import Counter
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +32,9 @@ PRIORITY_RANK = {"act": 3, "attend": 2, "track": 1}
 LEVEL_RANK = {"critical": 3, "warning": 2, "ok": 1, "unknown": 0}
 MAX_CVES = 300
 MAX_HISTORY = 30
+LOG_LINES = 2000
+# Nome di un pod Kubernetes (DNS-1123): il parametro della pagina Log non è mai usato così com'è.
+POD_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$")
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -56,6 +61,12 @@ def _parse(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value) if value else None
     except ValueError:
         return None
+
+
+def _local(value: str | None, now: datetime) -> str:
+    """Data leggibile nel fuso della dashboard, per i testi (gli allarmi non sono ISO)."""
+    parsed = _parse(value)
+    return parsed.astimezone(now.tzinfo).strftime("%d/%m %H:%M") if parsed else "mai"
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -200,6 +211,7 @@ def node_status(
             "started": wave.get("started"),
             "last_success": wave.get("last_success"),
             "outcome": (outcome or {}).get("outcome"),
+            "detail": (outcome or {}).get("detail"),
         },
         "profile": {
             "units": len((profile or {}).get("units") or []),
@@ -333,6 +345,83 @@ def controller_status(
     }
 
 
+def log_allowed(name: str | None, pods: list[dict[str, Any]]) -> bool:
+    """Solo i pod di SAGE nel suo namespace, con un nome valido."""
+    return bool(name and POD_NAME_RE.match(name) and name in {p["name"] for p in pods})
+
+
+def health(
+    ctl: dict[str, Any],
+    report: dict[str, Any],
+    api_problems: list[str] | None,
+    rows: list[dict[str, Any]],
+    nodes: dict[str, Node],
+    now: datetime,
+) -> dict[str, Any]:
+    """Salute dei componenti di SAGE e di ogni server (pagina Salute)."""
+
+    def item(name: str, level: str, detail: str) -> dict[str, str]:
+        return {"name": name, "level": level, "detail": detail}
+
+    if ctl["suspended"]:
+        controller = item("controllore", "warning", "spento: nessun giro")
+    elif ctl["alive"]:
+        controller = item("controllore", "ok", ctl["text"])
+    else:
+        controller = item("controllore", "critical", "nessun segno di vita da oltre 5 minuti")
+    if api_problems is None:
+        api = item("API ed etcd", "unknown", "non verificato")
+    elif api_problems:
+        api = item("API ed etcd", "critical", "controlli falliti: " + ", ".join(api_problems))
+    else:
+        api = item("API ed etcd", "ok", "/readyz sano")
+    components = [controller, api]
+    if report:
+        kev = report.get("kev_available", True)
+        components.append(
+            item("catalogo KEV", "ok" if kev else "warning", "letto" if kev else "non disponibile")
+        )
+        generated = _parse(report.get("generated_at"))
+        old = generated is None or now - generated > timedelta(days=2)
+        components.append(
+            item(
+                "ultimo controllo",
+                "warning" if old else "ok",
+                _local(report.get("generated_at"), now),
+            )
+        )
+    for name, st in sorted((report.get("llm") or {}).items()):
+        level = "ok"
+        if st.get("errors"):
+            level = "warning" if st.get("ok") else "critical"
+        latency = st.get("last_latency")
+        detail = f"{st.get('ok', 0)} risposte, {st.get('errors', 0)} errori"
+        if latency is not None:
+            detail += f", ultima in {latency} s"
+        if st.get("last_error"):
+            detail += f"; ultimo errore: {st['last_error']}"
+        components.append(item(f"LLM {name}", level, detail))
+    quarantine = {q["node"]: q["until"] for q in ctl["quarantined"]}
+    reached = set(report.get("profiles") or {})
+    servers = [
+        {
+            "name": r["name"],
+            "group": r["group"],
+            "level": r["level"],
+            "ready": r["ready"],
+            "cordoned": r["cordoned"],
+            "reached": r["name"] in reached,
+            "kernel": nodes[r["name"]].kernel if r["name"] in nodes else "",
+            "os_image": nodes[r["name"]].os_image if r["name"] in nodes else "",
+            "outcome": r["wave"]["outcome"],
+            "quarantine_until": quarantine.get(r["name"]),
+            "reboot": r["plan"]["reboot"],
+        }
+        for r in rows
+    ]
+    return {"components": components, "servers": servers}
+
+
 def build_status(
     *,
     cfg: config.Config | None,
@@ -345,6 +434,8 @@ def build_status(
     deployment: dict[str, Any] | None,
     history_text: str | None,
     now: datetime,
+    cycles: dict[str, Any] | None = None,
+    api_problems: list[str] | None = None,
 ) -> dict[str, Any]:
     """Tutto quello che mostra la dashboard, calcolato dai dati già nel cluster."""
     report = report or {}
@@ -363,10 +454,11 @@ def build_status(
         alarm(
             "warning",
             f"{q['node']} in quarantena dopo {q['failures']} remediation fallite: "
-            f"si ritenta da solo dopo {q['until']}",
+            f"si ritenta da solo dopo {_local(q['until'], local_now)}",
         )
     for g in ctl["stopped_groups"]:
-        alarm("warning", f"gruppo {g['group']} fermo ({g['reason']}): riprova dopo {g['until']}")
+        until = _local(g["until"], local_now)
+        alarm("warning", f"gruppo {g['group']} fermo ({g['reason']}): riprova dopo {until}")
     if ctl["suspended"]:
         alarm("warning", "controllore spento: nessun giro finché non lo riattivi")
     elif not ctl["alive"]:
@@ -443,6 +535,8 @@ def build_status(
         else [],
         "cves": cve_table(report),
         "history": parse_history(history_text),
+        "cycles": list(reversed((cycles or {}).get("cycles") or []))[:100],
+        "health": health(ctl, report, api_problems, node_rows, by_name, local_now),
     }
 
 
@@ -483,8 +577,16 @@ class Source:
             deployment=self.kube.read_deployment(f"{r}-controller"),
             history_text=self.kube.read_text(f"{r}-history", "history.jsonl"),
             now=datetime.now().astimezone(),
+            cycles=self.kube.read_json(f"{r}-cycles"),
+            api_problems=self.kube.api_problems(),
         )
         return status, (report or {}).get("vex")
+
+    def pods(self) -> list[dict[str, Any]]:
+        return self.kube.list_pods(f"app.kubernetes.io/instance={self.release}")
+
+    def log(self, name: str) -> str:
+        return self.kube.pod_log(name, LOG_LINES)
 
     def get(self) -> tuple[dict[str, Any], dict[str, Any] | None]:
         with self._lock:
@@ -537,6 +639,18 @@ def make_handler(source: Source, refresh_seconds: int) -> type[BaseHTTPRequestHa
                 if path == "/api/status":
                     status, _ = source.get()
                     self._json({**status, "refresh_seconds": refresh_seconds})
+                    return
+                if path == "/api/pods":
+                    self._json(source.pods())
+                    return
+                if path == "/api/logs":
+                    query = urllib.parse.parse_qs(self.path.partition("?")[2])
+                    name = (query.get("pod") or [None])[0]
+                    if not log_allowed(name, source.pods()):
+                        self._send(404, b"pod sconosciuto", "text/plain")
+                        return
+                    body = source.log(name).encode()
+                    self._send(200, body, "text/plain; charset=utf-8")
                     return
                 if path == "/api/vex":
                     _, vex = source.get()
