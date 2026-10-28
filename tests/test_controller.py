@@ -646,3 +646,115 @@ def test_self_update_job_only_in_pause_and_once_per_interval():
     updates = [m for m in cluster.created if m["metadata"]["name"].startswith("sage-update-")]
     assert len(updates) == 1
     assert "in pausa" in ctl.step(T0 + timedelta(minutes=2))  # non un secondo Job
+
+
+def parallel(workers=10, max_unavailable=4, per_zone=0, zones=1):
+    def worker(i):
+        labels = {"sage.io/group": "worker", "topology.kubernetes.io/zone": f"z{i % zones}"}
+        return Node(f"w{i:02d}", labels, "192.0.2.1", True, False)
+
+    nodes = [worker(i) for i in range(1, workers + 1)] + [
+        node("m1", master=True),
+        node("m2", master=True),
+    ]
+    cfg = base_config(
+        controller={"control_plane_stable_seconds": 0},
+        groups=[
+            {
+                "name": "worker",
+                "selector": "sage.io/group=worker",
+                "order": 1,
+                "canary": "w01",
+                "max_unavailable": max_unavailable,
+                "max_unavailable_per_zone": per_zone,
+            },
+            {
+                "name": "master",
+                "selector": "node-role.kubernetes.io/control-plane",
+                "order": 2,
+                "max_unavailable": 3,
+            },
+        ],
+    )
+    cluster = Cluster(nodes)
+    ctl = Controller(
+        cfg, cluster, "sage", False, LlmChain(cfg.llm, env={}, get_status=lambda *a: 200)
+    )
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {n.name: PLAN for n in nodes})
+    return cluster, ctl
+
+
+def running_now(cluster):
+    return sorted(
+        j.node for j in cluster.jobs.values() if j.active and j.name.startswith("sage-fix-")
+    )
+
+
+def finish_all(cluster, ok=True):
+    for name in [
+        j.name for j in cluster.jobs.values() if j.active and j.name.startswith("sage-fix-")
+    ]:
+        cluster.finish(name, ok=ok)
+
+
+def test_workers_in_parallel_grow_gradually_up_to_the_limit():
+    cluster, ctl = parallel()
+    sizes = []
+    for _ in range(12):
+        ctl.steps(T0)
+        now = running_now(cluster)
+        if not now:
+            break
+        assert len({n[0] for n in now}) == 1  # mai worker e master insieme
+        if now[0].startswith("m"):
+            break
+        sizes.append(len(now))
+        finish_all(cluster)
+    assert sizes[:5] == [1, 1, 2, 4, 2]  # canary da solo, poi 1, 2, 4 (tetto), gli ultimi 2
+    assert max(sizes) == 4
+
+
+def test_masters_one_at_a_time_after_the_workers():
+    cluster, ctl = parallel(workers=2)
+    seen = []
+    for _ in range(10):
+        ctl.steps(T0)
+        now = running_now(cluster)
+        if not now:
+            break
+        seen.append(now)
+        finish_all(cluster)
+    assert ["m1"] in seen and ["m2"] in seen
+    assert all(len(s) == 1 for s in seen if s[0].startswith("m"))
+
+
+def test_zone_limit():
+    cluster, ctl = parallel(workers=8, max_unavailable=4, per_zone=1, zones=2)
+    for _ in range(6):
+        ctl.steps(T0)
+        now = running_now(cluster)
+        zones = [int(n[1:]) % 2 for n in now]
+        assert len(zones) == len(set(zones))  # mai due nodi della stessa zona insieme
+        finish_all(cluster)
+
+
+def test_failure_stops_new_nodes_but_running_ones_finish():
+    cluster, ctl = parallel(workers=10, max_unavailable=4)
+    for _ in range(3):  # canary, poi 1, poi 2 insieme
+        ctl.steps(T0)
+        finish_all(cluster)
+    ctl.steps(T0)
+    busy = running_now(cluster)
+    assert len(busy) == 4
+    first, *others = [
+        j.name for j in cluster.jobs.values() if j.active and j.name.startswith("sage-fix-")
+    ]
+    cluster.finish(first, ok=False)
+    msgs = ctl.steps(T0)
+    assert any("gruppo worker fermo" in m for m in msgs)
+    assert len(running_now(cluster)) == 3  # nessun nodo nuovo, gli altri continuano
+    for name in others:
+        cluster.finish(name)
+    ctl.steps(T0)
+    assert not [n for n in running_now(cluster) if n.startswith("w")]  # il gruppo resta fermo

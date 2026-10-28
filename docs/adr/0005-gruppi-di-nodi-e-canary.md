@@ -24,3 +24,14 @@ Su nodi HPC il drain può interrompere job di lunga durata.
 
 - Un cluster di prova dovrebbe avere almeno un nodo per ogni gruppo della produzione.
 - I master sono l'ultimo gruppo, uno alla volta, per non perdere il quorum di etcd.
+
+## Aggiornamento (2026-10-28): più nodi insieme
+
+Per i cluster grandi un nodo alla volta non basta. Ogni gruppo ha `max_unavailable` (numero o
+percentuale, default 1: il comportamento di prima) e `max_unavailable_per_zone` (0 = nessun
+limite, altrimenti per `topology.kubernetes.io/zone`). Il canary va sempre da solo; poi i nodi
+insieme crescono con quelli già riusciti (1, 2, 4...) fino al tetto. I master restano uno alla
+volta, qualunque sia il valore (quorum di etcd). I gruppi restano in ordine: il successivo parte
+quando il precedente ha finito. Un errore ferma il gruppo (ADR-0019): nessun nodo nuovo, quelli
+partiti finiscono. I PodDisruptionBudget li rispetta il drain; un drain bloccato da un PDB
+mette il nodo in attesa senza fermare il gruppo.

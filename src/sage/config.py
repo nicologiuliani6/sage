@@ -9,6 +9,7 @@ I soli default presenti sono valori prudenti e indipendenti dall'ambiente
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,6 +79,18 @@ class NodeGroup:
     allow_mitigate: bool = False
     requires_fallback: bool = False
     health_urls: tuple[str, ...] = ()
+    # Nodi del gruppo fuori servizio insieme: un numero o una percentuale ("10%"). Si arriva
+    # al tetto per gradi (canary da solo, poi 1, 2, 4...). I master sono sempre uno alla volta.
+    max_unavailable: int | str = 1
+    # Al massimo tanti nodi insieme nella stessa zona (topology.kubernetes.io/zone); 0 = no.
+    max_unavailable_per_zone: int = 0
+
+    def slots(self, members: int) -> int:
+        """Tetto di nodi insieme per un gruppo di `members` nodi (almeno 1)."""
+        value = self.max_unavailable
+        if isinstance(value, str):
+            value = math.ceil(members * int(value.rstrip("%")) / 100)
+        return max(1, value)
 
 
 @dataclass(frozen=True)
@@ -356,6 +369,14 @@ def _parse_groups(raw: Any, errors: list[str]) -> tuple[NodeGroup, ...]:
         health_urls = _str_list(g, "health_urls", where, errors)
         for url in health_urls:
             _url(url, f"{where}.health_urls", errors)
+        max_unavailable = g.get("max_unavailable", 1)
+        valid_number = isinstance(max_unavailable, int) and not isinstance(max_unavailable, bool)
+        valid_percent = isinstance(max_unavailable, str) and re.fullmatch(
+            r"(100|[1-9][0-9]?)%", max_unavailable
+        )
+        if not ((valid_number and max_unavailable >= 1) or valid_percent):
+            errors.append(f"{where}.max_unavailable: intero >= 1 o percentuale (es. 10%)")
+            max_unavailable = 1
 
         groups.append(
             NodeGroup(
@@ -370,6 +391,8 @@ def _parse_groups(raw: Any, errors: list[str]) -> tuple[NodeGroup, ...]:
                 allow_mitigate=bool(g.get("allow_mitigate", False)),
                 requires_fallback=bool(g.get("requires_fallback", False)),
                 health_urls=health_urls,
+                max_unavailable=max_unavailable,
+                max_unavailable_per_zone=_int(g, "max_unavailable_per_zone", 0, where, errors, 0),
             )
         )
     return tuple(sorted(groups, key=lambda grp: grp.order))

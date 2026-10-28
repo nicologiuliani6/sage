@@ -57,6 +57,7 @@ QUARANTINE_MAX = timedelta(days=7)
 GROUP_FAILURE_RATIO = 0.1
 # Giri tenuti nello storico per la dashboard: 100 riassunti restano ben sotto 1 MiB.
 CYCLES_KEPT = 100
+ZONE_LABEL = "topology.kubernetes.io/zone"
 
 
 def _iso(value: datetime) -> str:
@@ -263,13 +264,62 @@ class Controller:
 
     def _remediate(self, doc: dict[str, Any], now: datetime) -> str:
         cycle = doc["cycle"]
+        before = [n for n, st in doc["nodes"].items() if st.get("status") == "running"]
+        messages = [self._check_running(doc, node, now) for node in before]
         running = [n for n, st in doc["nodes"].items() if st.get("status") == "running"]
-        if running:
-            return self._check_running(doc, running[0], now)
-        pending = [n for n in cycle["queue"] if n not in cycle["results"]]
+        if len(running) < len(before) or self.again:
+            # Un nodo ha finito (o è tornato in coda): lo si dice, e il passo dopo (subito)
+            # sceglie il prossimo.
+            return "; ".join(messages)
+        pending = [n for n in cycle["queue"] if n not in cycle["results"] and n not in running]
         if not pending:
-            return self._pause(doc, now, "giro completato")
-        return self._start_node(doc, pending[0], now)
+            return "; ".join(messages) if running else self._pause(doc, now, "giro completato")
+        nodes = {n.name: n for n in self.kube.list_nodes()}
+        groups, _ = assign_groups(list(nodes.values()), self.cfg.groups)
+        group = groups.get(pending[0])
+        if group is None:
+            return self._start_node(doc, pending[0], now) if not running else "; ".join(messages)
+        name = group.name
+        # Gruppi in ordine: il successivo parte solo quando il precedente ha finito.
+        if any((groups.get(n) or group).name != name for n in running):
+            return "; ".join(messages)
+        members = [n for n in cycle["queue"] if groups.get(n) and groups[n].name == name]
+        slots = self._slots(cycle, group, members, nodes)
+        if len(running) >= slots:
+            return "; ".join(messages)
+        candidate = self._zone_free(group, pending, members, running, nodes)
+        if candidate is None:
+            return "; ".join(messages)
+        message = self._start_node(doc, candidate, now)
+        # Ancora un posto libero nel gruppo: il prossimo nodo parte subito.
+        self.again = self.again or len(running) + 1 < slots
+        return message
+
+    def _slots(self, cycle: dict[str, Any], group: Any, members: list[str], nodes: dict) -> int:
+        """Nodi del gruppo insieme: il canary da solo, poi tanti quanti i nodi già riusciti
+        (1, 2, 4...) fino a max_unavailable. I master sempre uno alla volta (quorum di etcd)."""
+        if any(nodes[n].control_plane for n in members if n in nodes):
+            return 1
+        results = cycle["results"]
+        if not members or members[0] not in results:
+            return 1
+        done = sum(1 for n in members if results.get(n, {}).get("outcome") == OUTCOME_DONE)
+        return min(group.slots(len(members)), max(1, done))
+
+    def _zone_free(
+        self, group: Any, pending: list[str], members: list[str], running: list[str], nodes: dict
+    ) -> str | None:
+        """Il prossimo nodo del gruppo, saltando le zone già al limite."""
+        candidates = [n for n in pending if n in members]
+        limit = group.max_unavailable_per_zone
+        if not limit:
+            return candidates[0] if candidates else None
+
+        def zone(n: str) -> str:
+            return nodes[n].labels.get(ZONE_LABEL, "") if n in nodes else ""
+
+        busy = Counter(zone(n) for n in running)
+        return next((n for n in candidates if busy[zone(n)] < limit), None)
 
     def _check_running(self, doc: dict[str, Any], node: str, now: datetime) -> str:
         st = doc["nodes"][node]

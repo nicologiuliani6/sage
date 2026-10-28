@@ -45,11 +45,10 @@
 - [ ] Stabilità delle risposte del modello
 
 ### Scala: cluster da 1000 nodi
-- [ ] Remediation in parallelo per gruppo. Master sempre uno alla volta, e solo con tutti i
-      membri etcd sani prima di iniziare. Worker con avvio graduale (canary, poi 1, 2, 4...)
-      fino a un massimo del gruppo (`max_unavailable`, numero o percentuale), nel rispetto
-      dei PodDisruptionBudget, della capacità libera del cluster e di un limite per zona.
-      Un errore blocca i nuovi nodi; quelli in corso finiscono.
+- [x] Remediation in parallelo per gruppo (`max_unavailable`, avvio graduale, limite per zona,
+      master uno alla volta).
+- [ ] Remediation in parallelo: controllo della capacità libera del cluster prima di svuotare
+      un nodo (oggi la protezione la danno i PodDisruptionBudget).
 - [ ] Raccolta più parallela: `forks` di Ansible configurabile, più pod di controllo
 - [ ] Stato nell'API Kubernetes per oggetti piccoli: una risorsa (CRD) per nodo con stato e
       piano, al posto della ConfigMap unica (limite di 1 MiB); report completo e VEX su un
