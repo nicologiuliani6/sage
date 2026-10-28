@@ -157,8 +157,11 @@
           # Un errore passeggero dell'API (EOF, etcd lento, master che riparte) non deve far
           # fallire il Job: dopo un riavvio riuscito il rescue annullerebbe l'aggiornamento.
           until: sage_kube_op is succeeded
-          retries: 3
-          delay: 10
+          # Un PodDisruptionBudget (es. lo storage che tiene un volume sul nodo) blocca lo
+          # sfratto finché i pod già spostati non hanno liberato le risorse: come kubectl drain,
+          # si riprova fino a drain_timeout invece di rinunciare dopo pochi secondi.
+          retries: "{{ ((sage_drain_timeout | int) / 30) | round(0, 'ceil') | int }}"
+          delay: 30
           when: sage_disrupt | bool and sage_drain_mode == 'evict'
 
         - name: Attendi che il nodo si svuoti da solo (job lunghi)
