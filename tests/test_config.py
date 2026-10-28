@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from sage import config
+from tests.conftest import base_config
 
 EXAMPLE = Path(__file__).parents[1] / "examples" / "config.example.yaml"
 
@@ -96,3 +97,28 @@ def test_helm_values_example_contains_valid_config():
     raw["ssh"].setdefault("key_path", "/etc/sage/ssh/id_ed25519")  # default del chart
     cfg = config.parse(raw)
     assert [g.name for g in cfg.groups] == ["worker", "master"]
+
+
+def test_node_data_defaults_to_in_cluster_endpoints():
+    """I log dei nodi vanno per default solo agli LLM su un nodo del cluster (ADR-0004)."""
+    llm = base_config(
+        llm={
+            "endpoints": [
+                {
+                    "name": "interno",
+                    "base_url": "http://o/v1",
+                    "model": "m",
+                    "hosted_in_group": "worker",
+                },
+                {"name": "esterno", "base_url": "https://e/v1", "model": "m"},
+                {
+                    "name": "spento",
+                    "base_url": "http://s/v1",
+                    "model": "m",
+                    "hosted_in_group": "worker",
+                    "node_data": False,
+                },
+            ]
+        }
+    ).llm
+    assert [ep.node_data for ep in llm.endpoints] == [True, False, False]

@@ -107,6 +107,12 @@ class SourcesConfig:
 
 
 @dataclass(frozen=True)
+class AlertsConfig:
+    # URL a cui SAGE manda un POST JSON per ogni avviso; vuoto = solo Eventi Kubernetes.
+    webhook_url: str | None = None
+
+
+@dataclass(frozen=True)
 class ControllerConfig:
     """Il controllore gira in loop: controllo completo, remediation nodo per nodo, pausa."""
 
@@ -137,6 +143,7 @@ class Config:
     # Servizi (unit systemd) o pacchetti fuori da Kubernetes che un nodo deve tenere:
     # nome del nodo -> elenco. Contano come necessari anche quando non girano.
     extra_services: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    alerts: AlertsConfig = field(default_factory=AlertsConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
 
     def group(self, name: str) -> NodeGroup | None:
@@ -178,6 +185,7 @@ def parse(raw: dict[str, Any]) -> Config:
 
     extra_services = _parse_extra_services(raw.get("extra_services"), errors)
     controller = _parse_controller(raw.get("controller") or {}, errors)
+    alerts = _parse_alerts(raw.get("alerts"), errors)
 
     group_names = {g.name for g in groups}
     for ep in llm.endpoints:
@@ -196,6 +204,7 @@ def parse(raw: dict[str, Any]) -> Config:
         log_level=log_level,
         extra_services=extra_services,
         controller=controller,
+        alerts=alerts,
     )
 
 
@@ -270,7 +279,9 @@ def _parse_llm(raw: dict[str, Any], errors: list[str]) -> LlmConfig:
         if name in names:
             errors.append(f"{where}.name: '{name}' duplicato")
         names.add(name)
-        node_data = ep.get("node_data", False)
+        # Per default i log dei nodi vanno solo a un LLM che gira su un nodo del cluster
+        # (hosted_in_group); mai a un servizio esterno (ADR-0004).
+        node_data = ep.get("node_data", bool(ep.get("hosted_in_group")))
         if not isinstance(node_data, bool):
             errors.append(f"{where}.node_data deve essere true o false")
         endpoints.append(
@@ -360,6 +371,18 @@ def _parse_controller(raw: Any, errors: list[str]) -> ControllerConfig:
             raw, "control_plane_stable_seconds", 60, where, errors, 0
         ),
     )
+
+
+def _parse_alerts(raw: Any, errors: list[str]) -> AlertsConfig:
+    if raw is None:
+        return AlertsConfig()
+    if not isinstance(raw, dict):
+        errors.append("alerts: deve essere un oggetto")
+        return AlertsConfig()
+    where = "alerts"
+    webhook_url = raw.get("webhook_url") or None
+    _url(webhook_url, where, errors)
+    return AlertsConfig(webhook_url=webhook_url)
 
 
 def _parse_extra_services(raw: Any, errors: list[str]) -> dict[str, tuple[str, ...]]:

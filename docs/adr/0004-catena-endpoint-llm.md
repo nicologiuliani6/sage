@@ -34,3 +34,11 @@ averne bisogno, e i piani gratuiti non sono il caso d'uso. Se capita comunque un
 endpoint fino a tre volte. Intanto rallenta le chiamate successive del giro. Le attese sono
 limitate (60 secondi l'una, 15 minuti per giro); dopo si passa alla riserva e, senza risposta, la
 CVE resta "nel dubbio si aggiorna". `min_interval_seconds` resta disponibile per casi particolari.
+
+## Aggiornamento (2026-10-28): log dei nodi solo agli LLM interni
+
+Con il recupero automatico (ADR-0019) un LLM può ricevere il log di un aggiornamento fallito,
+che è un dato del nodo. Lo riceve solo un endpoint con `node_data: true`. Il default è vero per
+gli endpoint con `hosted_in_group` (girano su un nodo del cluster) e falso per tutti gli altri:
+un servizio esterno non riceve mai dati dei nodi, a meno che qualcuno non lo scriva
+esplicitamente nella configurazione. Per le CVE non cambia niente: solo dati pubblici.
