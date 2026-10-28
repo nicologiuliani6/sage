@@ -116,6 +116,12 @@ ssh -L 8080:localhost:8080 <utente>@<master>
 sage --dashboard          # sul master; poi http://localhost:8080 sul tuo computer
 ```
 
+**Aggiornamenti di SAGE**: SAGE si aggiorna da solo una volta al giorno, in pausa tra due giri,
+alle release firmate dello stesso canale (`self_update.channel`: `minor` per default, `patch`,
+`off`). Se dopo l'aggiornamento non produce un report nuovo entro 45 minuti torna alla versione
+di prima e non la riprova ([ADR-0021](adr/0021-aggiornamento-automatico.md)). Lo storico dice
+cosa ha fatto.
+
 **Aggiornare o riconfigurare durante un giro** è sicuro. Il controllore che si riavvia
 riprende dallo stato salvato, senza ricominciare il giro. I Job già partiti (controllo o
 remediation) finiscono da soli, e i cambi di gruppi e configurazione valgono dal nodo

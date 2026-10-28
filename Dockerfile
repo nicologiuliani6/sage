@@ -6,6 +6,11 @@ FROM python:3.12-slim-trixie
 ARG OPA_VERSION=1.21.3
 ARG OPA_SHA256=add7c9dcf56e1ce1538426a6ee595ea1cc7ee830bbedd4c23219825b02b19a79
 ARG UV_VERSION=0.11.32
+# Per l'aggiornamento automatico (ADR-0021): verifica della firma e helm upgrade.
+ARG COSIGN_VERSION=v3.1.3
+ARG COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+ARG HELM_VERSION=v4.3.0
+ARG HELM_SHA256=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-client ca-certificates curl \
@@ -13,6 +18,14 @@ RUN apt-get update \
       "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64_static" \
  && echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c - \
  && chmod 0755 /usr/local/bin/opa \
+ && curl -fsSL -o /usr/local/bin/cosign \
+      "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+ && echo "${COSIGN_SHA256}  /usr/local/bin/cosign" | sha256sum -c - \
+ && chmod 0755 /usr/local/bin/cosign \
+ && curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+ && echo "${HELM_SHA256}  /tmp/helm.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/helm.tgz -C /usr/local/bin --strip-components=1 linux-amd64/helm \
+ && rm /tmp/helm.tgz \
  && apt-get purge -y curl && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 

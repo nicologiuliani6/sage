@@ -36,7 +36,7 @@ che serve a controllo e remediation ma non al controllore) e probe (livenessProb
 */}}
 {{- define "sage.podSpec" -}}
 {{- $root := .root -}}
-serviceAccountName: {{ include "sage.fullname" $root }}
+serviceAccountName: {{ .serviceAccount | default (include "sage.fullname" $root) }}
 restartPolicy: {{ .restartPolicy | default "Never" }}
 {{- with $root.Values.imagePullSecrets }}
 imagePullSecrets:

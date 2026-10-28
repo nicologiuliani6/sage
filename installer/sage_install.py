@@ -1274,6 +1274,18 @@ def transient_api_error(proc: subprocess.CompletedProcess) -> bool:
     return proc.returncode != 0 and any(e in text for e in TRANSIENT_API_ERRORS)
 
 
+def with_release_repository(values: dict, chart_url) -> dict:
+    """Repository delle release per l'aggiornamento automatico (ADR-0021), ricavato da dove
+    viene il chart di questo installer. Uno già scritto nella configurazione resta."""
+    m = re.match(r"https://github\.com/([^/]+/[^/]+)/releases/download/", chart_url or "")
+    config = values.get("config") or {}
+    current = config.get("self_update") or {}
+    if not m or current.get("repository"):
+        return values
+    self_update = {**current, "repository": m.group(1)}
+    return {**values, "config": {**config, "self_update": self_update}}
+
+
 def retry_api(call, check=True, sleep=time.sleep) -> subprocess.CompletedProcess:
     """Ripete un comando kubectl o helm se fallisce per un errore di rete verso l'API
     (attese di 2, 4, 8 e 16 secondi). Gli altri errori passano subito."""
@@ -2834,6 +2846,7 @@ class Installer:
         if image:
             values = {**values, "image": {**values.get("image", {}), **split_image(image)}}
         values = {**values, "caBundle": self.apply_ca_bundle()}
+        values = with_release_repository(values, RELEASE.get("chart_url"))
         path = self.tmp / "values.json"
         path.write_text(json.dumps(values, indent=2))
         description = f"{who_text(self.kube_user)}: {action}"[:200]

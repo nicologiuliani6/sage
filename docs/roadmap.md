@@ -17,6 +17,15 @@
       ([ADR-0017](adr/0017-piu-distribuzioni.md))
 - [x] Dashboard web di sola lettura, aggiornata in tempo reale
       ([ADR-0014](adr/0014-dashboard-sola-lettura.md))
+- [x] Nessuna persona necessaria: quarantena del nodo e del gruppo al posto del fermo del
+      cluster, recupero automatico da un catalogo chiuso (regole, poi LLM interno), avvisi
+      (Eventi e webhook) ([ADR-0019](adr/0019-quarantena-del-nodo.md))
+- [x] Robustezza su ogni cluster: errori passeggeri dell'API, control plane stabile prima di
+      ogni nodo, drain bloccato da un PDB senza fermare il gruppo, test con kind 1.34 e 1.37
+      ([ADR-0018](adr/0018-ogni-cluster-senza-rompere.md))
+- [x] Dashboard a pagine con grafici: panoramica, nodi, CVE, giri, salute, log, storico
+- [x] Aggiornamento automatico alle release firmate, con rollback se SAGE non lavora
+      ([ADR-0021](adr/0021-aggiornamento-automatico.md))
 
 ## Da fare
 

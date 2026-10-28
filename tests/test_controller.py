@@ -631,3 +631,18 @@ def test_drain_blocked_by_pdb_waits_without_stopping_the_group():
     msg = ctl.step(T0)
     assert "in quarantena" in msg and "gruppo" not in msg
     assert "avviata su w2" in ctl.step(T0)
+
+
+def test_self_update_job_only_in_pause_and_once_per_interval():
+    cluster = Cluster()
+    cfg = base_config(self_update={"repository": "owner/sage", "check_hours": 24})
+    ctl = Controller(
+        cfg, cluster, "sage", False, LlmChain(cfg.llm, env={}, get_status=lambda *a: 200)
+    )
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": EMPTY, "w2": EMPTY, "w3": EMPTY, "m1": EMPTY})
+    step_until(ctl, T0, "giro completato")
+    assert "aggiornamenti di SAGE" in ctl.step(T0 + timedelta(minutes=1))
+    updates = [m for m in cluster.created if m["metadata"]["name"].startswith("sage-update-")]
+    assert len(updates) == 1
+    assert "in pausa" in ctl.step(T0 + timedelta(minutes=2))  # non un secondo Job

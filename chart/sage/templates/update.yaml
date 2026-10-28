@@ -1,0 +1,55 @@
+{{- $su := .Values.config.self_update | default dict }}
+{{- if ne ($su.channel | default "minor") "off" }}
+# Aggiornamento automatico (ADR-0021): il controllore crea questo Job in pausa. Serve un
+# account da amministratore perché il chart contiene ClusterRole e binding: lo usa solo
+# questo Job, solo dopo aver verificato la firma della release.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "sage.fullname" . }}-updater
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "sage.fullname" . }}-updater
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sage.fullname" . }}-updater
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sage.fullname" . }}-update-template
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+data:
+  job.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      labels:
+        {{- include "sage.labels" . | nindent 8 }}
+        app.kubernetes.io/component: update
+        sage.io/role: update
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 4500
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "sage.labels" . | nindent 12 }}
+            app.kubernetes.io/component: update
+            sage.io/role: update
+        spec:
+          {{- include "sage.podSpec" (dict "root" . "args" (list "self-update" "--config" "/etc/sage/config/config.yaml") "noSsh" true "serviceAccount" (printf "%s-updater" (include "sage.fullname" .))) | nindent 10 }}
+{{- end }}

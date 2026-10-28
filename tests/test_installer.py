@@ -1541,3 +1541,17 @@ class ResumeFollow(unittest.TestCase):
         ):
             self.assertEqual(installer.resume_view(), 0)
         self.assertEqual(followed, ["job/fix-w1", "job/fix-w2"])  # ognuno una volta sola
+
+
+class ReleaseRepository(unittest.TestCase):
+    def test_repository_from_chart_url(self):
+        url = "https://github.com/owner/sage/releases/download/v0.8.0/sage-0.8.0.tgz"
+        values = inst.with_release_repository({"config": {"timezone": "UTC"}}, url)
+        self.assertEqual(values["config"]["self_update"], {"repository": "owner/sage"})
+        self.assertEqual(values["config"]["timezone"], "UTC")
+
+    def test_existing_repository_kept_and_local_chart_ignored(self):
+        values = {"config": {"self_update": {"repository": "altro/sage", "channel": "off"}}}
+        url = "https://github.com/owner/sage/releases/download/v1/x.tgz"
+        self.assertEqual(inst.with_release_repository(values, url), values)
+        self.assertEqual(inst.with_release_repository({"config": {}}, None), {"config": {}})

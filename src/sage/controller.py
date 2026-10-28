@@ -175,7 +175,9 @@ class Controller:
                 return self._start_cycle(doc, now, "richiesto a mano")
             if now >= _time(cycle["pause_until"]):
                 return self._start_cycle(doc, now, "fine della pausa")
-            return resumed or f"in pausa fino a {cycle['pause_until']}"
+            return (
+                resumed or self._maybe_update(doc, now) or f"in pausa fino a {cycle['pause_until']}"
+            )
         if phase == "scan":
             return self._wait_scan(doc, now)
         return resumed or self._remediate(doc, now)
@@ -449,6 +451,28 @@ class Controller:
         if stable < needed:
             return f"control plane sano da {int(stable)} s su {needed}"
         return None
+
+    def _maybe_update(self, doc: dict[str, Any], now: datetime) -> str:
+        """In pausa, una volta ogni check_hours: Job che aggiorna SAGE alla release firmata
+        (ADR-0021). Mai durante un giro: niente nodi a metà mentre SAGE cambia."""
+        su = self.cfg.self_update
+        if su.channel == "off" or not su.repository:
+            return ""
+        state = doc.setdefault("self_update", {})
+        last = _time(state.get("launched"))
+        if last and now - last < timedelta(hours=su.check_hours):
+            return ""
+        template = self.kube.read_text(f"{self.release}-update-template", "job.yaml")
+        if not template:
+            return ""
+        manifest = yaml.safe_load(template)
+        manifest.setdefault("metadata", {})["name"] = (
+            f"{self.release}-update-{now.strftime('%y%m%d%H%M%S')}"
+        )
+        state["launched"] = _iso(now)
+        self.save(doc)  # prima lo stato: al riavvio non si lancia un secondo Job
+        self.kube.create_job(manifest)
+        return f"controllo degli aggiornamenti di SAGE ({manifest['metadata']['name']})"
 
     def _pause(self, doc: dict[str, Any], now: datetime, why: str) -> str:
         doc.pop("waiting", None)
