@@ -154,7 +154,8 @@ def test_kube_calls_retry_on_api_errors():
     assert len(writes) >= 9
     for t in writes:
         assert t["until"] == f"{t['register']} is succeeded", t["name"]
-        assert t["retries"] >= 3, t["name"]
+        retries = t["retries"]
+        assert isinstance(retries, str) or retries >= 3, t["name"]  # stringa: da drain_timeout
 
 
 def test_failure_message_from_ansible_output():
