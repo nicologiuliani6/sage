@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +37,15 @@ log = logging.getLogger(__name__)
 
 VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 ISSUER = "https://token.actions.githubusercontent.com"
-# Quanto aspettare il primo report del SAGE nuovo prima di dichiararlo guasto.
-PROOF_TIMEOUT = 45 * 60
+# Prova che il SAGE nuovo lavora (wait_for_work): non un tempo fisso per il controllo, che su
+# cluster grandi o con un LLM lento dura quanto deve, ma segni di vita e di avanzamento.
+START_TIMEOUT = 15 * 60  # entro tanto il controllore nuovo deve iniziare un giro
+LEASE_STALE = 5 * 60  # un controllore vivo rinnova il Lease ogni 30 s circa
+PROOF_TIMEOUT = (
+    3 * 60 * 60 + 15 * 60
+)  # tempo massimo di un controllo (activeDeadlineSeconds) + margine
+# Una versione annullata si riprova dopo tanto (il guasto poteva essere del cluster, non suo).
+SKIP_DAYS = 7
 HISTORY_KEY = "history.jsonl"
 
 
@@ -124,21 +131,61 @@ def last_good_revision(release: str, namespace: str) -> str | None:
     return str(good[-1]["revision"]) if good else None
 
 
-def wait_for_work(kube: KubeApi, release: str, since: str | None, sleep=time.sleep) -> bool:
-    """Il SAGE nuovo deve produrre un report più recente di `since` (controllo completo
-    chiesto con <release>-scan-now)."""
+def wait_for_work(
+    kube: KubeApi, release: str, since: str | None, sleep=time.sleep, clock=time.monotonic
+) -> bool:
+    """Il SAGE nuovo lavora? Si chiede un controllo completo e si aspetta un report più recente
+    di `since`, quanto serve. Guasto vero (e subito rollback) solo se il controllore nuovo non
+    inizia un giro entro START_TIMEOUT, smette di rinnovare il Lease o il controllo fallisce."""
     kube.set_flag(f"{release}-scan-now")
-    deadline = time.monotonic() + PROOF_TIMEOUT
-    while time.monotonic() < deadline:
+    started = clock()
+    asked = datetime.now(UTC)
+    while clock() - started < PROOF_TIMEOUT:
         sleep(30)
         try:
             report = kube.read_json(f"{release}-report") or {}
+            doc = kube.read_json(f"{release}-controller") or {}
+            lease = kube.read_lease(f"{release}-controller") or {}
         except Exception:  # noqa: BLE001 (API lenta durante l'aggiornamento: si riprova)
             continue
         new = _when(report.get("generated_at"))
         if new and (since is None or new > _when(since)):
             return True
+        elapsed = clock() - started
+        cycle = doc.get("cycle") or {}
+        began = _when(cycle.get("started"))
+        if (began is None or began < asked) and elapsed > START_TIMEOUT:
+            log.error("il SAGE nuovo non ha iniziato un giro in %d minuti", START_TIMEOUT // 60)
+            return False
+        renewed = _when(lease.get("renew_time"))
+        if elapsed > START_TIMEOUT and (
+            renewed is None or (datetime.now(UTC) - renewed).total_seconds() > LEASE_STALE
+        ):
+            log.error("il controllore nuovo non dà segni di vita (Lease non rinnovato)")
+            return False
+        if began and began >= asked and cycle.get("error"):
+            log.error("il controllo del SAGE nuovo è fallito: %s", cycle["error"])
+            return False
+    log.error("nessun report nuovo entro il tempo massimo di un controllo")
     return False
+
+
+def _skipped(state: dict[str, Any], now: datetime) -> list[str]:
+    """Versioni da non riprovare adesso: annullate da meno di SKIP_DAYS giorni."""
+    out = []
+    for item in state.get("skipped", []):
+        if isinstance(item, str):  # formato della 0.9/0.10: diventa una scadenza da adesso
+            continue
+        until = _when(item.get("until"))
+        if until and until > now:
+            out.append(item["tag"])
+    return out
+
+
+def _skip(state: dict[str, Any], tag: str, now: datetime) -> None:
+    until = (now + timedelta(days=SKIP_DAYS)).isoformat(timespec="seconds")
+    kept = [i for i in state.get("skipped", []) if isinstance(i, dict) and i.get("tag") != tag]
+    state["skipped"] = kept + [{"tag": tag, "until": until}]
 
 
 def _when(value: str | None) -> datetime | None:
@@ -173,7 +220,8 @@ def run(cfg: Config, kube: KubeApi, release: str, namespace: str) -> int:
         )
         return 0
     state = kube.read_json(f"{release}-update") or {}
-    skipped = state.get("skipped", [])
+    now = datetime.now(UTC)
+    skipped = _skipped(state, now)
     current = os.environ.get("SAGE_VERSION") or __version__
     releases = json.loads(_get(f"{su.api_url}/repos/{su.repository}/releases?per_page=30"))
     target = pick_release(releases, current, su.channel, skipped)
@@ -192,7 +240,7 @@ def run(cfg: Config, kube: KubeApi, release: str, namespace: str) -> int:
         except Exception as exc:  # noqa: BLE001
             log.error("release %s non verificata: %s", tag, exc)
             state["last"] = {"version": version, "ok": False, "detail": str(exc)[:300]}
-            state["skipped"] = skipped + [tag]
+            _skip(state, tag, now)
             kube.write_json(f"{release}-update", state)
             record(
                 kube, release, "aggiornamento rifiutato", [f"versione {version}"], str(exc)[:300]
@@ -216,7 +264,7 @@ def run(cfg: Config, kube: KubeApi, release: str, namespace: str) -> int:
         if previous:
             helm("rollback", release, previous, "-n", namespace, "--wait", "--timeout", "10m")
         state["last"] = {"version": version, "ok": False, "detail": why}
-        state["skipped"] = skipped + [tag]
+        _skip(state, tag, now)
         record(kube, release, "aggiornamento annullato", [f"versione {version}"], why)
     kube.write_json(f"{release}-update", state)
     return 0 if ok else 1

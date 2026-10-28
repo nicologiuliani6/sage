@@ -1,6 +1,7 @@
 """Aggiornamento automatico di SAGE (ADR-0021)."""
 
 import subprocess
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -51,6 +52,9 @@ class FakeKube:
     def append_text(self, name, key, text):
         self.history.append(text)
 
+    def read_lease(self, name):
+        return self.store.get("lease")
+
 
 def setup(monkeypatch, *, verified=True, works=True):
     cfg = base_config(self_update={"repository": "owner/sage", "channel": "minor"})
@@ -81,7 +85,7 @@ def test_unsigned_release_is_refused_and_nothing_changes(monkeypatch):
     cfg, kube, calls = setup(monkeypatch, verified=False)
     assert update.run(cfg, kube, "sage", "sage") == 1
     assert "upgrade" not in calls
-    assert kube.store["sage-update"]["skipped"] == ["v0.8.1"]
+    assert [i["tag"] for i in kube.store["sage-update"]["skipped"]] == ["v0.8.1"]
     assert "rifiutato" in kube.history[0]
 
 
@@ -97,7 +101,7 @@ def test_sage_that_does_not_work_is_rolled_back(monkeypatch):
     cfg, kube, calls = setup(monkeypatch, works=False)
     assert update.run(cfg, kube, "sage", "sage") == 1
     assert calls == ["history", "upgrade", "rollback"]
-    assert kube.store["sage-update"]["skipped"] == ["v0.8.1"]
+    assert [i["tag"] for i in kube.store["sage-update"]["skipped"]] == ["v0.8.1"]
 
 
 def test_off_or_without_repository_does_nothing(monkeypatch):
@@ -106,11 +110,76 @@ def test_off_or_without_repository_does_nothing(monkeypatch):
     assert update.run(base_config(), FakeKube(), "sage", "sage") == 0
 
 
-def test_wait_for_work_needs_a_newer_report():
+class Clock:
+    """Tempo finto: ogni sleep avanza l'orologio, niente attese vere."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def sleep(self, seconds):
+        self.t += seconds
+
+    def __call__(self):
+        return self.t
+
+
+def proof(kube, before="2026-10-28T10:00:00+00:00"):
+    clock = Clock()
+    return update.wait_for_work(kube, "sage", before, sleep=clock.sleep, clock=clock), clock.t
+
+
+def alive():
+    now = datetime.now(UTC)
+    return {"renew_time": now.isoformat()}, {
+        "cycle": {"started": (now + timedelta(seconds=1)).isoformat()}
+    }
+
+
+def test_proof_waits_as_long_as_the_new_sage_works():
+    """Un controllo lungo (cluster grande, LLM lento) non è un guasto: si aspetta."""
     kube = FakeKube()
-    kube.store["sage-report"] = {"generated_at": "2026-10-28T12:00:00+01:00"}  # = 11:00 UTC
-    assert update.wait_for_work(kube, "sage", "2026-10-28T10:00:00+00:00", sleep=lambda s: None)
+    kube.store["lease"], kube.store["sage-controller"] = alive()
+    calls = {"n": 0}
+
+    def read_json(name):
+        if name == "sage-report":
+            calls["n"] += 1
+            # Report nuovo solo dopo 2 ore di controllo.
+            done = calls["n"] > 240
+            return {
+                "generated_at": "2026-10-28T12:00:00+00:00" if done else "2026-10-28T09:00:00+00:00"
+            }
+        return kube.store.get(name)
+
+    kube.read_json = read_json
+    ok, waited = proof(kube)
+    assert ok and waited > 2 * 3600
     assert kube.flags == ["sage-scan-now"]
+
+
+def test_proof_fails_fast_if_no_cycle_starts():
+    kube = FakeKube()
+    kube.store["lease"] = alive()[0]
+    kube.store["sage-controller"] = {"cycle": {"started": "2026-10-01T00:00:00+00:00"}}
+    ok, waited = proof(kube)
+    assert not ok and waited <= update.START_TIMEOUT + 60
+
+
+def test_proof_fails_if_the_controller_stops_renewing_the_lease():
+    kube = FakeKube()
+    lease, kube.store["sage-controller"] = alive()
+    kube.store["lease"] = {"renew_time": "2026-10-01T00:00:00+00:00"}
+    ok, waited = proof(kube)
+    assert not ok and waited <= update.START_TIMEOUT + 60
+
+
+def test_a_rolled_back_version_is_retried_after_some_days():
+    now = datetime.now(UTC)
+    state = {"skipped": ["v0.8.0"]}  # formato vecchio: non blocca più per sempre
+    assert update._skipped(state, now) == []
+    update._skip(state, "v0.10.0", now)
+    assert update._skipped(state, now) == ["v0.10.0"]
+    assert update._skipped(state, now + timedelta(days=update.SKIP_DAYS + 1)) == []
 
 
 def test_verify_refuses_missing_signature_and_wrong_checksum(tmp_path, monkeypatch):

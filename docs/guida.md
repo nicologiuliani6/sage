@@ -118,8 +118,9 @@ sage --dashboard          # sul master; poi http://localhost:8080 sul tuo comput
 
 **Aggiornamenti di SAGE**: SAGE si aggiorna da solo una volta al giorno, in pausa tra due giri,
 alle release firmate dello stesso canale (`self_update.channel`: `minor` per default, `patch`,
-`off`). Se dopo l'aggiornamento non produce un report nuovo entro 45 minuti torna alla versione
-di prima e non la riprova ([ADR-0021](adr/0021-aggiornamento-automatico.md)). Lo storico dice
+`off`). Dopo l'aggiornamento aspetta un controllo completo, quanto serve; se il SAGE nuovo non
+lavora (non parte, non dà segni di vita, il controllo fallisce) torna alla versione di prima e
+la riprova dopo 7 giorni ([ADR-0021](adr/0021-aggiornamento-automatico.md)). Lo storico dice
 cosa ha fatto.
 
 **Aggiornare o riconfigurare durante un giro** è sicuro. Il controllore che si riavvia

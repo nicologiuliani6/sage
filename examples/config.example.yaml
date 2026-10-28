@@ -115,7 +115,7 @@ policy:
 
 # Avvisi quando un nodo va in quarantena o un gruppo si ferma (ADR-0019).
 # Aggiornamento automatico alle release firmate (ADR-0021): solo in pausa tra due giri; se il
-# SAGE nuovo non produce un report entro 45 minuti torna alla versione di prima.
+# SAGE nuovo non lavora torna alla versione di prima (e la riprova dopo 7 giorni).
 self_update:
   channel: minor                         # off | patch (solo 0.X.y) | minor (mai una maggiore)
   check_hours: 24
