@@ -5,10 +5,13 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+
+log = logging.getLogger(__name__)
 
 STATE_KEY = "data.json.gz"
 
@@ -62,6 +65,7 @@ class KubeApi(Protocol):
     def read_lease(self, name: str) -> dict[str, Any] | None: ...
     def read_deployment(self, name: str) -> dict[str, Any] | None: ...
     def api_problems(self) -> list[str]: ...
+    def post_event(self, node: str, reason: str, message: str) -> None: ...
 
 
 def encode(data: dict[str, Any]) -> str:
@@ -223,6 +227,35 @@ class Kube:
         if status != 200 and not failed:
             failed = [f"readyz HTTP {status}"]
         return failed
+
+    def post_event(self, node: str, reason: str, message: str) -> None:
+        """Crea un evento Kubernetes di tipo Warning per il nodo dato (ADR-0019)."""
+        from kubernetes import client
+        from kubernetes.client.exceptions import ApiException
+
+        now = datetime.now(UTC)
+        truncated = message[:1024]
+        event = client.V1Event(
+            metadata=client.V1ObjectMeta(generate_name="sage-"),
+            involved_object=client.V1ObjectReference(
+                api_version="v1",
+                kind="Node",
+                name=node,
+            ),
+            reason=reason,
+            message=truncated,
+            type="Warning",
+            source=client.V1EventSource(component="sage"),
+            first_timestamp=now,
+            last_timestamp=now,
+            count=1,
+        )
+        try:
+            self.core.create_namespaced_event(self.namespace, event)
+        except ApiException:
+            log.warning("evento per %s (%s): API error", node, reason)
+        except Exception:  # noqa: BLE001 (connessione, timeout, ecc.)
+            log.warning("evento per %s (%s): errore imprevisto", node, reason)
 
     def _lease_api(self):
         return self._client.CoordinationV1Api()

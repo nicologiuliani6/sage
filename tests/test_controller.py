@@ -47,6 +47,7 @@ class Cluster:
         self.created = []
         self.flags = set()
         self.problems = []  # controlli di /readyz che non passano
+        self.events = []  # (node, reason, message)
 
     def list_nodes(self):
         return self.nodes
@@ -86,6 +87,9 @@ class Cluster:
 
     def report(self, plans, at):
         self.write_json("sage-report", {"generated_at": at.isoformat(), "plans": plans})
+
+    def post_event(self, node, reason, message):
+        self.events.append((node, reason, message))
 
 
 def make(cluster, dry_run=False, pause=30, stable=0):
@@ -216,6 +220,10 @@ def test_failed_canary_quarantines_node_and_stops_group():
     assert "failures" in doc["nodes"]["w1"]
     assert "retry_after" in doc["nodes"]["w1"]
     assert "worker" in doc["groups"]
+
+    # Eventi Kubernetes: SageQuarantine per w1 e SageGroupStopped
+    assert any(e[1] == "SageQuarantine" and e[0] == "w1" for e in cluster.events)
+    assert any(e[1] == "SageGroupStopped" for e in cluster.events)
 
 
 def test_vanished_remediation_job_quarantines_node():
@@ -528,6 +536,18 @@ def test_unstable_control_plane_delays_the_node():
     # per un master servono 3 volte tanto: sano da 70 s, ne servono 180
     assert msgs == ["w1: remediation riuscita", "m1: in attesa, control plane sano da 70 s su 180"]
     assert "avviata su m1" in ctl.step(t + timedelta(seconds=180))
+
+
+def test_stability_restarts_after_a_long_gap():
+    """Cluster spento e riacceso: uno "stabile da" di giorni prima non vale, si riconta."""
+    cluster = Cluster([node("w1")])
+    ctl = make(cluster, stable=60)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN})
+    assert "sano da 0 s su 60" in ctl.step(T0)
+    later = T0 + timedelta(days=5)
+    assert "sano da 0 s su 60" in ctl.step(later)
+    assert "avviata su w1" in ctl.step(later + timedelta(seconds=60))
 
 
 def test_simulation_does_not_wait():

@@ -59,6 +59,8 @@ config:
     protected_modules: []
     idle_scans_required: 3  # "inutilizzato" solo dopo tanti controlli consecutivi...
     idle_days_required: 7   # ...e tanti giorni
+  # alerts:
+  #   webhook_url: https://hooks.example/x  # POST JSON per ogni avviso; vuoto = eventi K8s
 
 # CA per l'HTTPS verso l'esterno (KEV, EPSS, OSV, LLM): ConfigMap con la chiave ca.crt.
 # Serve dietro un proxy che ispeziona TLS. L'installer ci copia le CA del master.

@@ -110,3 +110,7 @@ policy:
     - vxlan
     - veth
     - "xt_*"
+
+# Avvisi quando un nodo va in quarantena o un gruppo si ferma (ADR-0019).
+# alerts:
+#   webhook_url: https://hooks.example/x   # POST JSON per ogni avviso; vuoto = solo eventi K8s

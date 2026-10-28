@@ -29,7 +29,7 @@ from typing import Any
 
 import yaml
 
-from sage import act
+from sage import act, alerts
 from sage.config import Config
 from sage.inventory import assign_groups
 from sage.kube import KubeApi
@@ -312,6 +312,7 @@ class Controller:
         st["retry_after"] = _iso(until)
         cycle["results"][node] = {"outcome": OUTCOME_FAILED, "detail": why, "at": _iso(now)}
         message = f"{node}: remediation {why} (job {st['job']}), in quarantena fino a {_iso(until)}"
+        alerts.notify(self.cfg, self.kube, node, "SageQuarantine", message)
         stopped = self._group_breaker(doc, node, now)
         if stopped:
             message += f"; {stopped}"
@@ -343,7 +344,9 @@ class Controller:
         gst["retry_after"] = _iso(until)
         gst["reason"] = f"{len(failed)} nodi falliti su {len(members)} (ultimo {node})"
         cycle.setdefault("stopped_groups", []).append(name)
-        return f"gruppo {name} fermo fino a {_iso(until)}"
+        text = f"gruppo {name} fermo: {gst['reason']} fino a {_iso(until)}"
+        alerts.notify(self.cfg, self.kube, node, "SageGroupStopped", text)
+        return text
 
     def _skip(self, cycle: dict[str, Any], node: str, outcome: str, now: datetime) -> str:
         cycle["results"][node] = {"outcome": outcome, "at": _iso(now)}
@@ -418,11 +421,16 @@ class Controller:
         /readyz sano (etcd compreso) e master tutti Ready, di fila da abbastanza tempo."""
         problems = self.kube.api_problems()
         problems += [f"master {n.name} non Ready" for n in nodes if n.control_plane and not n.ready]
+        # "Di fila": se fra due verifiche passa troppo tempo (controllore fermo, cluster
+        # spento e riacceso, un nodo appena finito) la stabilità va dimostrata da capo.
+        last = _time(doc.get("stable_checked"))
+        doc["stable_checked"] = _iso(now)
         if problems:
             doc["stable_since"] = None
             return "control plane instabile: " + ", ".join(problems[:3])
+        gap = timedelta(seconds=max(2 * self.cfg.controller.poll_seconds, 120))
         since = _time(doc.get("stable_since"))
-        if since is None:
+        if since is None or last is None or now - last > gap:
             doc["stable_since"] = _iso(now)
             since = now
         needed = self.cfg.controller.control_plane_stable_seconds * (3 if master else 1)
