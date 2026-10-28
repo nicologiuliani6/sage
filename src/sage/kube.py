@@ -28,6 +28,8 @@ class Node:
     ready: bool
     unschedulable: bool
     annotations: dict[str, str] = field(default_factory=dict)
+    kernel: str = ""
+    os_image: str = ""
 
     @property
     def control_plane(self) -> bool:
@@ -66,6 +68,7 @@ class KubeApi(Protocol):
     def read_deployment(self, name: str) -> dict[str, Any] | None: ...
     def api_problems(self) -> list[str]: ...
     def post_event(self, node: str, reason: str, message: str) -> None: ...
+    def job_message(self, job: str) -> str | None: ...
 
 
 def encode(data: dict[str, Any]) -> str:
@@ -118,6 +121,8 @@ class Kube:
                     ready=ready,
                     unschedulable=bool(n.spec.unschedulable),
                     annotations=dict(n.metadata.annotations or {}),
+                    kernel=getattr(n.status.node_info, "kernel_version", "") or "",
+                    os_image=getattr(n.status.node_info, "os_image", "") or "",
                 )
             )
         return sorted(nodes, key=lambda x: x.name)
@@ -256,6 +261,42 @@ class Kube:
             log.warning("evento per %s (%s): API error", node, reason)
         except Exception:  # noqa: BLE001 (connessione, timeout, ecc.)
             log.warning("evento per %s (%s): errore imprevisto", node, reason)
+
+    def list_pods(self, label_selector: str) -> list[dict[str, Any]]:
+        """Pod di SAGE nel namespace (dashboard, pagina Log), dal più recente."""
+        pods = []
+        for p in self.core.list_namespaced_pod(self.namespace, label_selector=label_selector).items:
+            labels = p.metadata.labels or {}
+            started = p.status.start_time
+            pods.append(
+                {
+                    "name": p.metadata.name,
+                    "phase": p.status.phase,
+                    "role": labels.get("sage.io/role") or labels.get("app.kubernetes.io/component"),
+                    "node": p.spec.node_name,
+                    "started": started.isoformat() if started else None,
+                }
+            )
+        return sorted(pods, key=lambda x: x["started"] or "", reverse=True)
+
+    def pod_log(self, name: str, tail_lines: int) -> str:
+        return self.core.read_namespaced_pod_log(
+            name, self.namespace, tail_lines=tail_lines, _request_timeout=10
+        )
+
+    def job_message(self, job: str) -> str | None:
+        """Messaggio di terminazione del pod di un Job (`sage remediate` ci scrive il motivo
+        di un fallimento); None se non c'è o non si legge."""
+        try:
+            pods = self.core.list_namespaced_pod(self.namespace, label_selector=f"job-name={job}")
+        except Exception:  # noqa: BLE001 (il motivo è un di più: senza si prosegue)
+            return None
+        for p in pods.items:
+            for cs in p.status.container_statuses or []:
+                done = cs.state.terminated if cs.state else None
+                if done and done.message:
+                    return done.message.strip()[:1000]
+        return None
 
     def _lease_api(self):
         return self._client.CoordinationV1Api()

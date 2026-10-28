@@ -5,6 +5,7 @@ from email.message import Message
 import pytest
 
 from sage import config, llm
+from tests.conftest import base_config
 
 
 def chain_cfg(**extra):
@@ -220,3 +221,24 @@ def test_retry_after_formats():
     assert llm.retry_after(http_error(429, "Wed, 21 Oct 2015 07:28:00 GMT")) == 0.0
     assert llm.retry_after(http_error(429, "boh")) is None
     assert llm.retry_after(http_error(429)) is None
+
+
+def test_stats_per_endpoint_for_the_dashboard():
+    cfg = base_config(
+        llm={
+            "endpoints": [
+                {"name": "a", "base_url": "http://a/v1", "model": "m"},
+                {"name": "b", "base_url": "http://b/v1", "model": "m"},
+            ]
+        }
+    ).llm
+
+    def post(url, body, headers, timeout):
+        if url.startswith("http://a"):
+            raise OSError("connessione rifiutata")
+        return {"choices": [{"message": {"content": '{"conditions": [], "summary": "x"}'}}]}
+
+    chain = llm.LlmChain(cfg, env={}, post=post, sleep=lambda s: None)
+    assert chain.ask("CVE-2026-1", "openssl", None, "high")
+    assert chain.stats["a"]["errors"] == 1 and "rifiutata" in chain.stats["a"]["last_error"]
+    assert chain.stats["b"]["ok"] == 1 and chain.stats["b"]["last_latency"] is not None

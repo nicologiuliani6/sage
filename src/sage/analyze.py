@@ -72,6 +72,7 @@ class Analysis:
     cache: dict[str, Any]
     llm_calls: int
     kev_available: bool
+    llm_stats: dict[str, Any] = field(default_factory=dict)
 
 
 def update_idle(
@@ -408,5 +409,6 @@ class Analyzer:
             idle=idle,
             cache=cache,
             llm_calls=self.chain.calls,
+            llm_stats=self.chain.stats,
             kev_available=kev_available,
         )

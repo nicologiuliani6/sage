@@ -27,6 +27,14 @@ rules:
       - {{ include "sage.fullname" . }}-state
       - {{ include "sage.fullname" . }}-history
       - {{ include "sage.fullname" . }}-controller
+      - {{ include "sage.fullname" . }}-cycles
+    verbs: ["get"]
+  # Pagina Log: solo i pod di SAGE, solo in questo namespace (è una Role).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
     verbs: ["get"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

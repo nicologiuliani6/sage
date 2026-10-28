@@ -155,3 +155,14 @@ def test_kube_calls_retry_on_api_errors():
     for t in writes:
         assert t["until"] == f"{t['register']} is succeeded", t["name"]
         assert t["retries"] >= 3, t["name"]
+
+
+def test_failure_message_from_ansible_output():
+    """Il motivo leggibile del fallimento arriva alla dashboard (messaggio di terminazione)."""
+    out = (
+        'TASK [Fallimento] ***\nfatal: [w1]: FAILED! => {"changed": false, "msg": '
+        '"aggiornamento NON riuscito: il nodo non \\u00e8 ripartito dopo il riavvio. '
+        'Passo: Riavvia il nodo."}\n'
+    )
+    assert remediate.failure_message(out, 2).startswith("aggiornamento NON riuscito: il nodo non è")
+    assert remediate.failure_message("niente", 3) == "remediation fallita (codice 3)"

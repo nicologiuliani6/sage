@@ -191,6 +191,8 @@ class LlmChain:
         self._interval = 0.0  # cresce dopo un 429: le chiamate successive rallentano
         self._waited = 0.0
         self.calls = 0
+        # Per endpoint, per la dashboard (Salute): tentativi, esiti, ultima latenza ed errore.
+        self.stats: dict[str, dict[str, Any]] = {}
 
     @property
     def primary(self) -> str | None:
@@ -225,9 +227,15 @@ class LlmChain:
                 "response_format": {"type": "json_object"},
             }
             attempt = 0
+            stats = self.stats.setdefault(
+                ep.name,
+                {"calls": 0, "ok": 0, "errors": 0, "last_latency": None, "last_error": None},
+            )
             while True:
                 self._pace()
                 started = time.monotonic()
+                stats["calls"] += 1
+                stats["last_at"] = datetime.now(UTC).isoformat()
                 try:
                     resp = self._post(
                         f"{ep.base_url}/chat/completions",
@@ -237,6 +245,8 @@ class LlmChain:
                     )
                     content = resp["choices"][0]["message"]["content"]
                     result = parse_response(content)
+                    stats["ok"] += 1
+                    stats["last_latency"] = round(time.monotonic() - started, 1)
                     log.info(
                         "LLM %s: %s (%s) in %.1f s, chiamata %d di %d",
                         ep.name,
@@ -248,6 +258,8 @@ class LlmChain:
                     )
                     return result, ep
                 except urllib.error.HTTPError as exc:
+                    stats["errors"] += 1
+                    stats["last_error"] = str(exc)[:200]
                     delay = self._backoff(exc, attempt)
                     if delay is None:
                         log.warning("LLM %s non utilizzabile per %s: %s", ep.name, cve, exc)
@@ -257,6 +269,8 @@ class LlmChain:
                     self._waited += delay
                     attempt += 1
                 except Exception as exc:  # rete, formato, validazione: si passa al successivo
+                    stats["errors"] += 1
+                    stats["last_error"] = str(exc)[:200]
                     log.warning("LLM %s non utilizzabile per %s: %s", ep.name, cve, exc)
                     break
         return None

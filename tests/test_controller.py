@@ -47,6 +47,7 @@ class Cluster:
         self.created = []
         self.flags = set()
         self.problems = []  # controlli di /readyz che non passano
+        self.messages = {}  # messaggio di terminazione per Job
         self.events = []  # (node, reason, message)
 
     def list_nodes(self):
@@ -78,6 +79,9 @@ class Cluster:
 
     def api_problems(self):
         return list(self.problems)
+
+    def job_message(self, job):
+        return self.messages.get(job)
 
     def pop_flag(self, name):
         if name in self.flags:
@@ -578,3 +582,36 @@ def test_scan_manifest():
     assert m["metadata"]["name"] == "sage-scan-261022120000"
     assert m["metadata"]["labels"]["sage.io/role"] == "scan"
     assert JOB["metadata"].get("name") is None
+
+
+def test_finished_cycles_are_kept_for_the_dashboard():
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": EMPTY})
+    ctl.step(T0)
+    cluster.finish(last_fix(cluster))
+    step_until(ctl, T0, "giro completato")
+    (cycle,) = cluster.read_json("sage-cycles")["cycles"]
+    assert cycle["id"] == 1 and cycle["outcomes"] == {"fatto": 1, "niente da fare": 3}
+    assert cycle["nodes"]["w1"]["outcome"] == "fatto"
+    cluster.write_json("sage-cycles", {"cycles": [{"id": i} for i in range(200)]})
+    doc = ctl.load()
+    ctl._pause(doc, T0, "prova")
+    kept = cluster.read_json("sage-cycles")["cycles"]
+    assert len(kept) == 100 and kept[-1]["id"] == 1
+
+
+def test_failure_reason_from_the_job_reaches_state_and_alerts():
+    """Il motivo scritto da `sage remediate` (es. nodo non ripartito) finisce nell'esito."""
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": EMPTY, "w3": EMPTY, "m1": EMPTY})
+    ctl.step(T0)
+    job = last_fix(cluster)
+    cluster.messages[job] = "aggiornamento NON riuscito: il nodo non è ripartito dopo il riavvio"
+    cluster.finish(job, ok=False)
+    assert "NON riuscito" in ctl.step(T0)
+    detail = ctl.load()["cycle"]["results"]["w1"]["detail"]
+    assert detail.startswith("fallita: aggiornamento NON riuscito")
