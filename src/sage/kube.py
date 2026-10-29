@@ -291,8 +291,10 @@ class Kube:
             # kubernetes >= 37: CoreV1Event; prima: V1Event.
             event_cls = getattr(client, "CoreV1Event", None) or client.V1Event
             now = datetime.now(UTC)
+            # Un Node non ha namespace: Kubernetes accetta i suoi eventi solo in "default"
+            # (nel namespace di SAGE: "involvedObject.namespace ... does not match").
             event = event_cls(
-                metadata=client.V1ObjectMeta(generate_name="sage-"),
+                metadata=client.V1ObjectMeta(generate_name="sage-", namespace="default"),
                 involved_object=client.V1ObjectReference(api_version="v1", kind="Node", name=node),
                 reason=reason,
                 message=message[:1024],
@@ -302,7 +304,7 @@ class Kube:
                 last_timestamp=now,
                 count=1,
             )
-            self.core.create_namespaced_event(self.namespace, event)
+            self.core.create_namespaced_event("default", event)
         except Exception:  # noqa: BLE001
             log.warning("evento per %s (%s) non creato", node, reason, exc_info=True)
 

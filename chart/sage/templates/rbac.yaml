@@ -53,9 +53,6 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
@@ -77,6 +74,36 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "sage.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sage.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Eventi sui nodi (ADR-0019): un Node non ha namespace e Kubernetes accetta i suoi eventi
+# solo nel namespace "default". Solo "create", solo eventi.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sage.fullname" . }}-node-events
+  namespace: default
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sage.fullname" . }}-node-events
+  namespace: default
+  labels:
+    {{- include "sage.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sage.fullname" . }}-node-events
 subjects:
   - kind: ServiceAccount
     name: {{ include "sage.fullname" . }}

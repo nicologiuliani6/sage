@@ -85,7 +85,15 @@ def prepare_ssh(ssh: SshConfig, workdir: Path) -> tuple[Path, list[str]]:
     key = workdir / "id"
     shutil.copyfile(ssh.key_path, key)
     os.chmod(key, 0o600)
-    options = ["-o BatchMode=yes", "-o ConnectTimeout=20"]
+    # Keepalive: un nodo che si spegne a connessione aperta non risponde e non chiude, e senza
+    # keepalive Ansible resta appeso fino al limite del Job (ore) fermando tutto il giro.
+    # 15 s x 8 = 2 minuti: un nodo carico risponde comunque ai keepalive (lo fa sshd).
+    options = [
+        "-o BatchMode=yes",
+        "-o ConnectTimeout=20",
+        "-o ServerAliveInterval=15",
+        "-o ServerAliveCountMax=8",
+    ]
     if known_hosts_configured(ssh):
         options += ["-o StrictHostKeyChecking=yes", f"-o UserKnownHostsFile={ssh.known_hosts_path}"]
     else:

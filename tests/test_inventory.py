@@ -98,6 +98,8 @@ def test_inventory(tmp_path):
     assert inv["vars"]["ansible_user"] == "admin"
     args = inv["vars"]["ansible_ssh_common_args"]
     assert "StrictHostKeyChecking=yes" in args and "ProxyJump=jump@bastion" in args
+    # un nodo che muore a connessione aperta non deve tenere appeso il Job per ore
+    assert "ServerAliveInterval=15" in args and "ServerAliveCountMax=8" in args
     key = inv["vars"]["ansible_ssh_private_key_file"]
     assert oct(os.stat(key).st_mode & 0o777) == "0o600"
     assert any("noip" in w for w in warnings)

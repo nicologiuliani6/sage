@@ -109,7 +109,9 @@ def test_post_event_builds_a_real_event_and_never_raises():
     k.core = SimpleNamespace(create_namespaced_event=lambda ns, ev: sent.append((ns, ev)))
     k.post_event("node7", "SageQuarantine", "x" * 2000)
     ((ns, event),) = sent
-    assert ns == "sage" and event.involved_object.name == "node7" and len(event.message) == 1024
+    # un Node non ha namespace: l'evento va in "default", non nel namespace di SAGE
+    assert ns == "default" and event.metadata.namespace == "default"
+    assert event.involved_object.name == "node7" and len(event.message) == 1024
 
     def broken(ns, ev):
         raise RuntimeError("API giù")
