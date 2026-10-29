@@ -21,8 +21,12 @@ controlla la release controlla un Job con permessi da amministratore.
   GitHub Actions) e poi il checksum del chart, che contiene l'immagine per digest. Senza firma
   valida non si tocca niente. cosign e helm sono nell'immagine, fissati per checksum.
 - **Prova che funziona**: dopo `helm upgrade --reset-then-reuse-values --wait`, il Job chiede un
-  controllo completo e aspetta un report nuovo (45 minuti). Un controllore acceso ma fermo è un
-  guasto: `helm rollback` alla revisione di prima e la versione non si riprova.
+  controllo completo e aspetta un report nuovo **quanto serve** (un controllo su un cluster grande
+  o con un LLM solo CPU può durare ore), fino al tempo massimo di un controllo. È un guasto, e si
+  torna subito alla revisione di prima con `helm rollback`, solo se il controllore nuovo non
+  inizia un giro entro 15 minuti, smette di rinnovare il Lease o il controllo fallisce.
+- **Versioni annullate**: non si riprovano per 7 giorni (il guasto poteva essere del cluster),
+  poi sì; una versione più nuova si prova subito.
 - **Storico**: ogni esito (aggiornato, rifiutato, annullato) finisce in `<release>-history` con
   chi = "sage (automatico)"; lo stato (ultimo controllo, versioni saltate) in
   `<release>-update`.

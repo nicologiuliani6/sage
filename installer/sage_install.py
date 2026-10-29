@@ -55,7 +55,11 @@ RELEASE: dict = {}  # sage-install:release
 # Valori indipendenti dal cluster: etichette di SAGE, default prudenti, preset pubblici.
 GROUP_LABEL = "sage.io/group"
 MANAGED_BY = "sage-install"
-CONTROL_PLANE_LABELS = ("node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master")
+CONTROL_PLANE_LABELS = (
+    "node-role.kubernetes.io/control-plane",
+    "node-role.kubernetes.io/master",
+    "node-role.kubernetes.io/etcd",  # RKE2 e k3s: nodi solo etcd, da trattare come master
+)
 GPU_RESOURCE_PREFIXES = ("nvidia.com/gpu", "amd.com/gpu", "gpu.intel.com/")
 # Famiglie supportate (ADR-0017): RHEL (dnf), SUSE (zypper), Debian e Ubuntu (apt).
 SUPPORTED_OS = re.compile(
