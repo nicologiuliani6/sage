@@ -109,6 +109,21 @@
           changed_when: false
           when: sage_pm != 'dnf'
 
+        # kubeadm e RKE2: l'apiserver è un pod statico kube-apiserver-<nodo>. k3s lo tiene dentro il
+        # suo binario: niente pod da aspettare, bastano nodo Ready e control plane stabile.
+        - name: Master - l'apiserver è un pod statico?
+          kubernetes.core.k8s_info:
+            kind: Pod
+            namespace: kube-system
+            name: "kube-apiserver-{{ sage_node_name }}"
+          register: sage_apiserver_before
+          delegate_to: localhost
+          become: false
+          until: sage_apiserver_before is succeeded
+          retries: 6
+          delay: 10
+          when: sage_disrupt | bool and sage_control_plane | bool
+
         - name: Cordon
           kubernetes.core.k8s_drain:
             name: "{{ sage_node_name }}"
@@ -374,7 +389,9 @@
                  | map(attribute='status') | first | default('False')) == 'True'
           retries: 60
           delay: 10
-          when: sage_disrupt | bool and sage_control_plane | bool
+          when:
+            - sage_disrupt | bool and sage_control_plane | bool
+            - sage_apiserver_before.resources | default([]) | length == 1
 
         - name: Master - etcd presente su questo nodo?
           ansible.builtin.command: systemctl cat etcd.service
