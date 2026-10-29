@@ -12,7 +12,20 @@ fi
 
 dist="$TOOLS/dist"
 rm -rf "$dist" && mkdir -p "$dist"
-helm package chart/sage -d "$dist" --version "$version" --app-version "$version"
+# Immagine della release dentro il chart (values.yaml): il chart è coperto dalla firma di
+# SHA256SUMS, così l'aggiornamento automatico sa quale immagine installare (ADR-0021).
+cp -r chart/sage "$dist/chart-src"
+python3 - "$dist/chart-src/values.yaml" "${IMAGE%@*}" "${IMAGE#*@}" <<'PY'
+import re, sys
+path, repo, digest = sys.argv[1:]
+text = open(path).read()
+text, n1 = re.subn(r'(?m)^  repository: ""', f'  repository: "{repo}"', text, count=1)
+text, n2 = re.subn(r'(?m)^  digest: ""', f'  digest: "{digest}"', text, count=1)
+assert n1 == n2 == 1 and digest.startswith("sha256:"), "image.repository/digest non trovati"
+open(path, "w").write(text)
+PY
+helm package "$dist/chart-src" -d "$dist" --version "$version" --app-version "$version"
+rm -rf "$dist/chart-src"
 chart="sage-${version}.tgz"
 chart_sha=$(sha256sum "$dist/$chart" | cut -d' ' -f1)
 base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"

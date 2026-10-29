@@ -40,3 +40,11 @@ controlla la release controlla un Job con permessi da amministratore.
 - Una correzione pubblicata arriva a tutti i cluster entro un giorno, senza persone.
 - Un aggiornamento che rompe SAGE torna indietro da solo; uno con firma sbagliata non parte.
 - Chi non vuole un Job da amministratore mette `channel: off` (installer o valori).
+
+## Aggiornamento (2026-10-29): anche l'immagine, non solo il chart
+
+L'installer fissa l'immagine nei values (`image.digest`) e `--reset-then-reuse-values` la
+riportava identica a ogni aggiornamento: cambiava il chart, il codice restava quello vecchio.
+Ora la release scrive repository e digest dell'immagine nel `values.yaml` del chart (coperto
+dalla firma di `SHA256SUMS`) e l'aggiornamento li passa a helm con `--set`. Una release il cui
+chart non fissa l'immagine viene rifiutata.
