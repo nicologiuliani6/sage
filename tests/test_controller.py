@@ -64,7 +64,7 @@ class Cluster:
 
     def list_jobs(self, selector):
         role = selector.split(",")[0].split("=")[1]
-        prefix = {"scan": "sage-scan-", "remediate": "sage-fix-"}[role]
+        prefix = {"scan": "sage-scan-", "remediate": "sage-fix-", "update": "sage-update-"}[role]
         return [j for j in self.jobs.values() if j.name.startswith(prefix)]
 
     def create_job(self, manifest):
@@ -646,6 +646,28 @@ def test_self_update_job_only_in_pause_and_once_per_interval():
     updates = [m for m in cluster.created if m["metadata"]["name"].startswith("sage-update-")]
     assert len(updates) == 1
     assert "in pausa" in ctl.step(T0 + timedelta(minutes=2))  # non un secondo Job
+
+
+def test_self_update_also_with_zero_pause():
+    """Con pause_minutes 0 la pausa è già finita a ogni passo: l'aggiornamento parte lo stesso
+    tra un giro e l'altro, e il giro successivo aspetta che il Job finisca."""
+    cluster = Cluster()
+    cfg = base_config(
+        controller={"pause_minutes": 0},
+        self_update={"repository": "owner/sage", "check_hours": 24},
+    )
+    ctl = Controller(
+        cfg, cluster, "sage", False, LlmChain(cfg.llm, env={}, get_status=lambda *a: 200)
+    )
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": EMPTY, "w2": EMPTY, "w3": EMPTY, "m1": EMPTY})
+    step_until(ctl, T0, "giro completato")
+    later = T0 + timedelta(minutes=1)
+    assert "aggiornamenti di SAGE" in ctl.step(later)
+    assert "aggiornamento di SAGE in corso" in ctl.step(later)
+    (update,) = [j for j in cluster.jobs if j.startswith("sage-update-")]
+    cluster.finish(update)
+    assert "fine della pausa" in ctl.step(later)
 
 
 def parallel(workers=10, max_unavailable=4, per_zone=0, zones=1):

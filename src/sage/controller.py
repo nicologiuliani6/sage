@@ -174,11 +174,16 @@ class Controller:
         if phase == "pause":
             if self.kube.pop_flag(f"{self.release}-scan-now"):
                 return self._start_cycle(doc, now, "richiesto a mano")
+            # Prima di ripartire: anche con pausa 0 (giri uno dopo l'altro) l'aggiornamento di
+            # SAGE deve trovare il suo momento, e il giro aspetta che il Job finisca.
+            update = self._maybe_update(doc, now)
+            if update:
+                return update
+            if any(j.active for j in self.kube.list_jobs(self._selector("update"))):
+                return "in pausa: aggiornamento di SAGE in corso"
             if now >= _time(cycle["pause_until"]):
                 return self._start_cycle(doc, now, "fine della pausa")
-            return (
-                resumed or self._maybe_update(doc, now) or f"in pausa fino a {cycle['pause_until']}"
-            )
+            return resumed or f"in pausa fino a {cycle['pause_until']}"
         if phase == "scan":
             return self._wait_scan(doc, now)
         return resumed or self._remediate(doc, now)
