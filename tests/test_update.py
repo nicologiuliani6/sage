@@ -56,7 +56,7 @@ class FakeKube:
         return self.store.get("lease")
 
 
-def setup(monkeypatch, *, verified=True, works=True):
+def setup(monkeypatch, *, verified=True, works=True, rollback_ok=True):
     cfg = base_config(self_update={"repository": "owner/sage", "channel": "minor"})
     kube = FakeKube()
     calls = []
@@ -72,8 +72,11 @@ def setup(monkeypatch, *, verified=True, works=True):
 
     def helm(*args):
         calls.append(args[0])
+        if args[0] in ("upgrade", "rollback"):
+            assert "--force-conflicts" in args
         out = '[{"revision": 7, "status": "deployed"}]' if args[0] == "history" else ""
-        return subprocess.CompletedProcess(args, 0, out, "")
+        rc = 1 if args[0] == "rollback" and not rollback_ok else 0
+        return subprocess.CompletedProcess(args, rc, out, "conflict" if rc else "")
 
     monkeypatch.setattr(update, "verify", verify)
     monkeypatch.setattr(update, "helm", helm)
@@ -102,6 +105,15 @@ def test_sage_that_does_not_work_is_rolled_back(monkeypatch):
     assert update.run(cfg, kube, "sage", "sage") == 1
     assert calls == ["history", "upgrade", "rollback"]
     assert [i["tag"] for i in kube.store["sage-update"]["skipped"]] == ["v0.8.1"]
+    assert kube.store["sage-update"]["last"]["rollback"] == "rollback a 7"
+
+
+def test_failed_rollback_is_reported_not_hidden(monkeypatch):
+    """Il rollback può fallire anche lui: log, stato e storico devono dirlo."""
+    cfg, kube, calls = setup(monkeypatch, works=False, rollback_ok=False)
+    assert update.run(cfg, kube, "sage", "sage") == 1
+    assert "NON riuscito: conflict" in kube.store["sage-update"]["last"]["rollback"]
+    assert "NON riuscito" in kube.history[0]
 
 
 def test_off_or_without_repository_does_nothing(monkeypatch):
