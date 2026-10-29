@@ -99,6 +99,19 @@ class NodesAndGroups(unittest.TestCase):
             n = inst.parse_nodes({"items": [node("n1", "192.0.2.9", os_image=os_image)]})[0]
             self.assertIsNone(n.problem, os_image)
 
+    def test_immutable_distros_are_not_managed(self):
+        for os_image in (
+            "Red Hat Enterprise Linux CoreOS 418.94",
+            "Fedora CoreOS 42",
+            "Flatcar Container Linux by Kinvolk 4152.2.3",
+            "Bottlerocket OS 1.30.0 (aws-k8s-1.33)",
+            "Talos (v1.10.5)",
+            "SUSE Linux Micro 6.1",
+            "openSUSE MicroOS",
+        ):
+            n = inst.parse_nodes({"items": [node("n1", "192.0.2.9", os_image=os_image)]})[0]
+            self.assertIn("immutabile", n.problem or "", os_image)
+
     def test_parse_nodes(self):
         nodes = inst.parse_nodes(CLUSTER)
         self.assertEqual([n.name for n in nodes], ["cp1", "g1", "u1", "w1", "w2", "x1"])

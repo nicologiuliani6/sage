@@ -29,6 +29,9 @@ attivamente) hanno una scadenza (6 ore per default) visibile nella dashboard.
   - SLES e openSUSE (zypper);
   - Debian 11 o successiva, Ubuntu 22.04 o successiva (apt; le CVE arrivano da OSV).
 
+  I sistemi immutabili (Fedora CoreOS e RHCOS, Flatcar, Bottlerocket, Talos, SUSE Micro e
+  MicroOS) si aggiornano in blocco da sé: SAGE li riconosce e non li tocca.
+
   Su ogni nodo `python3` deve essere almeno 3.9. RHEL 8 e SLES 15 hanno il 3.6: va installato
   un Python più recente (`python39`, `python311`) e reso `python3`.
 - Un master (o una macchina) con `kubectl` da amministratore del cluster e accesso SSH ai nodi

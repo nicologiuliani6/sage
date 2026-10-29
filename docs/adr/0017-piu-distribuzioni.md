@@ -80,3 +80,12 @@ decisioni e i piani restano gli stessi.
 - **Scaricare l'intero database OSV** di Debian e Ubuntu a ogni controllo: centinaia di MB ogni
   mezz'ora. Si usa l'API, eventualmente su un mirror.
 - **Solo il repository `-security` su Debian**: perde le correzioni dei rilasci intermedi.
+
+## Aggiornamento (2026-10-29): sistemi immutabili
+
+Fedora CoreOS e RHCOS (rpm-ostree), Flatcar e Bottlerocket (aggiornamento A/B), Talos, SUSE Micro
+e MicroOS (transactional-update) hanno un gestore di pacchetti o sembrano averlo, ma la radice
+è in sola lettura e si aggiornano in blocco con il loro meccanismo. L'installer li mostra come
+non gestibili; se finiscono comunque in un gruppo, il collector li riconosce (`/run/ostree-booted`
+o l'ID in `/etc/os-release`) e si ferma prima di guardare i pacchetti: il nodo resta fuori dal
+giro, mai un `dnf` o `zypper` su una radice in sola lettura.
