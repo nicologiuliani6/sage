@@ -881,6 +881,9 @@ def test_used_right_after_boot_is_boot_package(collector):
     assert booted == 1_700_000_000
     assert collector.used_at_boot("2023-11-14T22:20:00+00:00", booted) is True  # 7 min dopo
     assert collector.used_at_boot("2023-11-15T22:13:20+00:00", booted) is False  # un giorno dopo
+    # letto nelle 24 ore prima dell'avvio: con relatime la lettura all'avvio non si vede
+    assert collector.used_at_boot("2023-11-14T10:00:00+00:00", booted) is True
+    assert collector.used_at_boot("2023-11-12T10:00:00+00:00", booted) is False  # 2 giorni prima
     assert collector.used_at_boot(None, booted) is False
     assert collector.used_at_boot("2023-11-14T22:20:00+00:00", None) is False
 

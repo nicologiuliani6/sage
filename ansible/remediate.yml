@@ -347,6 +347,7 @@
           ansible.builtin.reboot:
             reboot_timeout: 1800
             msg: "SAGE: riavvio dopo aggiornamenti di sicurezza"
+          register: sage_reboot_done
           when: not sage_light | bool and sage_reboot | bool
           vars:
             sage_reboot: >-
@@ -437,6 +438,32 @@
           register: sage_kube_op
           until: sage_kube_op is succeeded
           retries: 6
+          delay: 10
+          when: sage_disrupt | bool
+
+        # Ready non basta: dopo una rimozione (es. iptables, che kubelet usa all'avvio)
+        # kube-proxy o la rete del cluster possono non ripartire. I pod dei DaemonSet del nodo
+        # devono tornare pronti, altrimenti è un errore e si torna indietro.
+        - name: Pod di sistema del nodo pronti (DaemonSet)
+          kubernetes.core.k8s_info:
+            kind: Pod
+            field_selectors:
+              - "spec.nodeName={{ sage_node_name }}"
+          register: sage_node_pods
+          delegate_to: localhost
+          become: false
+          until: >-
+            sage_node_pods.resources is defined
+            and (sage_node_pods.resources
+                 | selectattr('metadata.ownerReferences', 'defined')
+                 | selectattr('metadata.ownerReferences.0.kind', 'equalto', 'DaemonSet')
+                 | rejectattr('status.phase', 'equalto', 'Running') | list | length) == 0
+            and (sage_node_pods.resources
+                 | selectattr('metadata.ownerReferences', 'defined')
+                 | selectattr('metadata.ownerReferences.0.kind', 'equalto', 'DaemonSet')
+                 | map(attribute='status.containerStatuses') | map('default', [])
+                 | flatten | rejectattr('ready') | list | length) == 0
+          retries: 60
           delay: 10
           when: sage_disrupt | bool
 
@@ -555,6 +582,17 @@
             - sage_changed | default([]) | length > 0
           register: sage_undo
           changed_when: true
+          failed_when: false
+
+        # I moduli del kernel caricati all'avvio (es. nf_conntrack) tornano solo con un riavvio:
+        # se l'intervento aveva riavviato il nodo, il rollback lo riavvia di nuovo.
+        - name: Rollback - riavvia di nuovo il nodo
+          ansible.builtin.reboot:
+            reboot_timeout: 1800
+            msg: "SAGE: riavvio dopo il rollback"
+          when:
+            - sage_reboot_done is defined and sage_reboot_done is changed
+            - sage_undo is not defined or sage_undo.rc is not defined or sage_undo.rc == 0
           failed_when: false
 
         - name: Rollback non riuscito

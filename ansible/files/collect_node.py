@@ -89,6 +89,8 @@ DOC_PREFIXES = (
 )
 # Un file letto entro tanto dall'avvio è usato all'avvio, qualunque sia la sua cartella.
 BOOT_WINDOW_SECONDS = 30 * 60
+# relatime: l'atime si aggiorna solo se quello vecchio ha più di un giorno.
+RELATIME_SECONDS = 24 * 3600
 # Cron: un comando lanciato per due secondi al giorno non si vede mai tra i processi.
 SCRIPT_GLOBS = (
     "/etc/crontab",
@@ -557,11 +559,14 @@ def boot_time(stat_text):
 
 
 def used_at_boot(last_used, booted):
-    """L'ultimo accesso è subito dopo l'avvio: il pacchetto serve all'avvio del nodo."""
+    """Il pacchetto può servire all'avvio del nodo: l'ultimo accesso è subito dopo l'avvio,
+    oppure nelle 24 ore prima. Con relatime una lettura all'avvio non aggiorna l'atime se
+    quello vecchio ha meno di 24 ore: la lettura c'è stata ma non si vede (es. iptables,
+    usato da kubelet all'avvio, su un nodo nato poche ore prima)."""
     if not last_used or booted is None:
         return False
     seen = datetime.fromisoformat(last_used).timestamp()
-    return booted <= seen <= booted + BOOT_WINDOW_SECONDS
+    return booted - RELATIME_SECONDS <= seen <= booted + BOOT_WINDOW_SECONDS
 
 
 def is_idle(ctx, scan_ok=True):
