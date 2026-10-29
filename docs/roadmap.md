@@ -50,9 +50,11 @@
 - [ ] Remediation in parallelo: controllo della capacità libera del cluster prima di svuotare
       un nodo (oggi la protezione la danno i PodDisruptionBudget).
 - [ ] Raccolta più parallela: `forks` di Ansible configurabile, più pod di controllo
-- [ ] Stato nell'API Kubernetes per oggetti piccoli: una risorsa (CRD) per nodo con stato e
-      piano, al posto della ConfigMap unica (limite di 1 MiB); report completo e VEX su un
-      volume persistente o un object storage, non in etcd
+- [x] Report e stato oltre il limite di 1 MiB di una ConfigMap: divisi in parti
+      (`<nome>-part-N`, fino a 10 ConfigMap, circa 9 MB compressi), letti e scritti in modo
+      trasparente; una scrittura a metà non viene mai letta come valida
+- [ ] Oltre qualche migliaio di nodi: una risorsa (CRD) per nodo e report su un volume o un
+      object storage, fuori da etcd
 - [ ] Chiamate all'LLM in parallelo e budget per giro adatto a un server locale veloce
 - [ ] Dashboard aggregata per gruppo, con filtri e paginazione
 

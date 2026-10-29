@@ -14,6 +14,12 @@ from typing import Any, Protocol
 log = logging.getLogger(__name__)
 
 STATE_KEY = "data.json.gz"
+# Una ConfigMap non può superare circa 1 MiB: oltre questa misura (base64 del gzip) il contenuto
+# si divide in <nome>-part-1, -part-2... (al massimo PARTS_MAX in tutto). Report di centinaia di
+# nodi diversi ci arrivano; per chi legge non cambia niente.
+PART_BYTES = 900_000
+PARTS_MAX = 10
+PARTS_KEY = "parts"
 
 
 # Messa da remediate.yml sui nodi che SAGE mette in cordon (ADR-0019).
@@ -149,14 +155,37 @@ class Kube:
         cm = self._read_cm(name)
         if cm is None or not cm.binary_data or STATE_KEY not in cm.binary_data:
             return None
-        return decode(cm.binary_data[STATE_KEY])
+        blob = cm.binary_data[STATE_KEY]
+        parts = int((cm.data or {}).get(PARTS_KEY, "1"))
+        for i in range(1, parts):
+            part = self._read_cm(f"{name}-part-{i}")
+            if part is None or not part.binary_data or STATE_KEY not in part.binary_data:
+                return None  # scrittura a metà: come se non ci fosse, si rilegge al prossimo giro
+            blob += part.binary_data[STATE_KEY]
+        return decode(blob)
 
     def write_json(self, name: str, data: dict[str, Any]) -> None:
+        blob = encode(data)
+        chunks = [blob[i : i + PART_BYTES] for i in range(0, len(blob), PART_BYTES)] or [""]
+        if len(chunks) > PARTS_MAX:
+            raise ValueError(f"{name}: {len(blob)} byte compressi, oltre {PARTS_MAX} ConfigMap")
+        # Prima le parti, poi la principale che dice quante sono: chi legge a metà vede il
+        # contenuto vecchio intero o una parte mancante (None), mai un miscuglio decodificato.
+        for i, chunk in enumerate(chunks[1:], start=1):
+            self._put_cm(f"{name}-part-{i}", {STATE_KEY: chunk}, None)
+        self._put_cm(name, {STATE_KEY: chunks[0]}, {PARTS_KEY: str(len(chunks))})
+        for i in range(len(chunks), PARTS_MAX):  # parti avanzate da un contenuto più grande
+            if self._read_cm(f"{name}-part-{i}") is None:
+                break
+            self.core.delete_namespaced_config_map(f"{name}-part-{i}", self.namespace)
+
+    def _put_cm(self, name: str, binary: dict[str, str], data: dict[str, str] | None) -> None:
         body = self._client.V1ConfigMap(
             metadata=self._client.V1ObjectMeta(
                 name=name, labels={"app.kubernetes.io/name": "sage"}
             ),
-            binary_data={STATE_KEY: encode(data)},
+            binary_data=binary,
+            data=data,
         )
         if self._read_cm(name) is None:
             self.core.create_namespaced_config_map(self.namespace, body)
