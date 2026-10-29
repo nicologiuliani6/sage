@@ -109,6 +109,30 @@ def os_release():
     }
 
 
+# Sistemi immutabili (si aggiornano in blocco: rpm-ostree, A/B, transactional-update): un
+# gestore di pacchetti c'è o sembra esserci, ma la radice è in sola lettura. SAGE non li tocca.
+IMMUTABLE_IDS = (
+    "flatcar",
+    "fedora-coreos",
+    "rhcos",
+    "bottlerocket",
+    "talos",
+    "sl-micro",
+    "opensuse-microos",
+)
+
+
+def immutable(info):
+    """Motivo per cui il nodo è un sistema immutabile, o None."""
+    if os.path.exists("/run/ostree-booted"):
+        return "rpm-ostree"
+    ids = " ".join(info.get(k, "") for k in ("ID", "VARIANT_ID", "NAME")).lower()
+    for name in IMMUTABLE_IDS + ("coreos", "microos"):
+        if name in ids:
+            return name
+    return None
+
+
 def node_role():
     if os.path.exists("/etc/kubernetes/manifests/kube-apiserver.yaml"):
         return "control_plane"
@@ -983,6 +1007,11 @@ def main(argv=None):
     if argv is None:
         low_priority()
     extra = parse_args(sys.argv[1:] if argv is None else argv)
+    kind = immutable(parse_os_release(read_file("/etc/os-release")))
+    if kind:
+        error = f"sistema immutabile ({kind}): si aggiorna in blocco, SAGE non lo tocca"
+        print(json.dumps({"error": error}))
+        return 2
     pm = package_manager()
     if pm is None:
         print(json.dumps({"error": "gestore di pacchetti non supportato (dnf, zypper, apt)"}))

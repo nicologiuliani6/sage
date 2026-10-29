@@ -774,3 +774,30 @@ def test_reboot_required_file(collector, monkeypatch):
         "required": True,
         "reasons": ["reboot-required: libc6, linux-image-6.1.0-40-amd64"],
     }
+
+
+@pytest.mark.parametrize(
+    ("os_release", "kind"),
+    [
+        ('ID=rhcos\nNAME="Red Hat Enterprise Linux CoreOS"', "rhcos"),
+        ("ID=fedora\nVARIANT_ID=coreos", "coreos"),
+        ("ID=flatcar", "flatcar"),
+        ("ID=bottlerocket", "bottlerocket"),
+        ('ID=opensuse-microos\nNAME="openSUSE MicroOS"', "opensuse-microos"),
+        ("ID=debian", None),
+        ('ID=sles\nNAME="SLES"', None),
+    ],
+)
+def test_immutable_systems_are_refused(collector, monkeypatch, capsys, os_release, kind):
+    monkeypatch.setattr(collector.os.path, "exists", lambda p: False)
+    info = collector.parse_os_release(os_release)
+    assert collector.immutable(info) == kind
+    if kind:
+        monkeypatch.setattr(collector, "read_file", lambda path: os_release)
+        assert collector.main([]) == 2
+        assert "immutabile" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_ostree_booted_is_immutable(collector, monkeypatch):
+    monkeypatch.setattr(collector.os.path, "exists", lambda p: p == "/run/ostree-booted")
+    assert collector.immutable({"ID": "centos"}) == "rpm-ostree"

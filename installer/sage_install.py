@@ -62,6 +62,10 @@ CONTROL_PLANE_LABELS = (
 )
 GPU_RESOURCE_PREFIXES = ("nvidia.com/gpu", "amd.com/gpu", "gpu.intel.com/")
 # Famiglie supportate (ADR-0017): RHEL (dnf), SUSE (zypper), Debian e Ubuntu (apt).
+# Sistemi immutabili: si aggiornano in blocco da sé (rpm-ostree, A/B), SAGE non li gestisce.
+IMMUTABLE_OS = re.compile(
+    r"coreos|flatcar|bottlerocket|talos|microos|\bmicro\b|container-optimized", re.I
+)
 SUPPORTED_OS = re.compile(
     r"rocky|red hat|rhel|almalinux|centos stream|oracle linux|fedora|amazon linux"
     r"|suse|sles|debian|ubuntu",
@@ -168,6 +172,8 @@ class NodeInfo:
         """Motivo per cui il nodo non si può gestire, o None."""
         if not self.ip:
             return "senza InternalIP"
+        if IMMUTABLE_OS.search(self.os_image):
+            return "OS immutabile: si aggiorna in blocco da sé, SAGE non lo gestisce"
         if not SUPPORTED_OS.search(self.os_image):
             return "OS non supportato (servono dnf, zypper o apt)"
         return None
