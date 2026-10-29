@@ -347,3 +347,49 @@ def test_one_llm_call_per_source_package_and_cache_saved_during_run(monkeypatch)
     assert fake.asked == ["CVE-2026-0010"]  # una sola chiamata per i tre sottopacchetti
     assert list(cache) == ["CVE-2026-0010|glibc"]
     assert saved and "CVE-2026-0010|glibc" in saved[-1]
+
+
+def unused_report(ctx_changes=None):
+    pkg = package([], idle=True, removal=[])
+    pkg["context"].update(ctx_changes or {})
+    del pkg["advisories"]
+    rep = report({})
+    rep["unused"] = {"figlet": pkg}
+    return {"w1": rep}
+
+
+@needs_opa
+def test_unused_package_without_cves_removed_after_enough_scans():
+    cfg = base_config()
+    reports, groups = unused_report(), groups_for(cfg, "w1")
+    first, fake = run(reports, groups)
+    assert [d.package for d in first.decisions["w1"]] == []  # 1 controllo su 2: niente
+    second, fake = run(reports, groups, idle=first.idle, cache=first.cache)
+    d = decision(second, "w1", "figlet")
+    assert d.action == "remove" and d.advisories == [] and d.cves == []
+    assert fake.asked == []  # senza CVE l'LLM non serve
+
+
+@needs_opa
+def test_unused_package_kept_if_not_removable():
+    """Senza permesso di rimuovere, o con un cron che lo nomina: nessuna decisione
+    (mai un "update" di un pacchetto senza advisory)."""
+    cfg = base_config(groups=[{"name": "worker", "selector": "a", "order": 1, "kernel": "auto"}])
+    idle = {"w1|figlet": {"count": 9, "since": (NOW - timedelta(days=30)).isoformat()}}
+    analysis, _ = run(unused_report(), groups_for(cfg, "w1"), idle=idle, cfg=cfg)
+    assert analysis.decisions["w1"] == []
+    cfg = base_config()
+    reports = unused_report({"referenced_by": ["/etc/cron.d/x"]})
+    analysis, _ = run(reports, groups_for(cfg, "w1"), idle=idle)
+    assert analysis.decisions["w1"] == []
+
+
+def test_recent_file_access_is_not_idle():
+    """Un accesso recente ai file (atime) annulla i controlli: un cron di pochi secondi."""
+    policy = base_config(policy={"idle_scans_required": 1, "idle_days_required": 7}).policy
+    entry = {"count": 50, "since": (NOW - timedelta(days=30)).isoformat()}
+    recent = (NOW - timedelta(days=2)).isoformat()
+    old = (NOW - timedelta(days=20)).isoformat()
+    assert not idle_confirmed(entry, policy, NOW, recent)
+    assert idle_confirmed(entry, policy, NOW, old)
+    assert idle_confirmed(entry, policy, NOW, None)

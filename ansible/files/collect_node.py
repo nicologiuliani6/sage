@@ -37,6 +37,73 @@ BLOCK_COMMANDS = ("/bin/false", "/usr/bin/false", "/bin/true", "/usr/bin/true")
 ENV = dict(os.environ, LC_ALL="C", LANG="C", DEBIAN_FRONTEND="noninteractive")
 # Pacchetti del kernel: non si rimuovono e non si simula la loro rimozione.
 KERNEL_PREFIXES = ("kernel", "linux-image-", "linux-modules-")
+# File letti solo all'avvio (bootloader, initramfs, moduli, firmware): nessun processo li mostra,
+# ma toglierli rompe il riavvio. Un pacchetto che ne possiede uno non è mai inutilizzato.
+BOOT_PREFIXES = (
+    "/boot/",
+    "/usr/lib/modules/",
+    "/lib/modules/",
+    "/usr/lib/firmware/",
+    "/lib/firmware/",
+    "/usr/share/initramfs-tools/",
+    "/etc/initramfs-tools/",
+    "/usr/lib/dracut/",
+    "/etc/dracut.conf.d/",
+    "/etc/kernel/",
+    "/usr/lib/kernel/",
+    "/etc/grub.d/",
+    "/usr/lib/grub/",
+    "/usr/share/grub/",
+    "/etc/default/grub",
+    # Usati a ogni avvio da systemd: generatori (es. netplan crea la rete), udev, fsck delle
+    # partizioni (es. fsck.vfat per EFI), moduli, configurazione della rete.
+    "/usr/lib/systemd/system-generators/",
+    "/lib/systemd/system-generators/",
+    "/etc/systemd/system-generators/",
+    "/usr/lib/systemd/system-environment-generators/",
+    "/usr/lib/systemd/system-shutdown/",
+    "/usr/lib/udev/",
+    "/lib/udev/",
+    "/etc/udev/",
+    "/usr/sbin/fsck.",
+    "/sbin/fsck.",
+    "/usr/lib/modprobe.d/",
+    "/etc/modprobe.d/",
+    "/usr/lib/modules-load.d/",
+    "/etc/modules-load.d/",
+    "/usr/lib/systemd/network/",
+    "/etc/systemd/network/",
+    "/etc/network/",
+    "/etc/netplan/",
+    "/usr/lib/netplan/",
+)
+# Documentazione: leggerla non vuol dire usare il pacchetto (apt-listchanges, ad esempio, legge
+# il changelog di tutti i pacchetti). Il suo ultimo accesso non conta.
+DOC_PREFIXES = (
+    "/usr/share/doc/",
+    "/usr/share/man/",
+    "/usr/share/info/",
+    "/usr/share/locale/",
+    "/usr/share/lintian/",
+    "/usr/share/bug/",
+)
+# Un file letto entro tanto dall'avvio è usato all'avvio, qualunque sia la sua cartella.
+BOOT_WINDOW_SECONDS = 30 * 60
+# Cron: un comando lanciato per due secondi al giorno non si vede mai tra i processi.
+SCRIPT_GLOBS = (
+    "/etc/crontab",
+    "/etc/anacrontab",
+    "/etc/cron.d/*",
+    "/etc/cron.hourly/*",
+    "/etc/cron.daily/*",
+    "/etc/cron.weekly/*",
+    "/etc/cron.monthly/*",
+    "/var/spool/cron/*",
+    "/var/spool/cron/crontabs/*",
+)
+SCRIPT_MAX_BYTES = 1 << 20
+# Pacchetti senza CVE esaminati per la rimozione, al massimo (il controllo resta leggero).
+UNUSED_MAX = 300
 # Cartelle che su Rocky 9 (e Debian 12, Ubuntu) sono collegamenti (usrmerge): rpm elenca
 # /lib64/libc.so.6, il
 # kernel in /proc/<pid>/maps scrive /usr/lib64/libc.so.6. Si confrontano i percorsi reali.
@@ -413,9 +480,99 @@ def parse_privileged(out):
     return sorted(found)
 
 
+def read_bytes(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read(SCRIPT_MAX_BYTES)
+    except OSError:
+        return b""
+
+
+def script_texts(unit_files):
+    """Testo dei cron e dei file dei servizi del nodo (unit e script di ExecStart): chi nomina
+    un eseguibile lo usa, anche se in quel momento non gira."""
+    paths = set(unit_files)
+    for pattern in SCRIPT_GLOBS:
+        paths.update(glob.glob(pattern))
+    texts = []
+    for path in sorted(paths):
+        data = read_bytes(path)
+        if data and b"\0" not in data[:4096]:  # un eseguibile compilato non si legge
+            texts.append((path, data.decode("utf-8", "replace")))
+    return texts
+
+
+def referenced_by(binaries, texts):
+    """Cron e script che nominano uno degli eseguibili, per percorso o per nome."""
+    found = set()
+    for binary in binaries:
+        name = re.escape(os.path.basename(binary))
+        pattern = re.compile(r"(?<![\w.+-])" + name + r"(?![\w.+-])")
+        found.update(path for path, text in texts if pattern.search(text))
+    return sorted(found)
+
+
+def mount_options(text):
+    """/proc/self/mountinfo -> [(punto di mount, opzioni)], dal percorso più lungo."""
+    mounts = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) > 5:
+            mounts.append((parts[4], set(parts[5].split(","))))
+    return sorted(mounts, key=lambda m: len(m[0]), reverse=True)
+
+
+def disk_usage(files, mounts):
+    """Ultimo accesso ai file del pacchetto (atime) e se il dato è affidabile.
+
+    Con relatime (il default di Linux) l'atime si aggiorna almeno una volta al giorno: anche
+    un comando lanciato da un cron per due secondi lascia il segno. Con noatime no: in quel
+    caso l'ultimo uso non si può sapere e il pacchetto non è mai inutilizzato.
+    """
+    latest, reliable = None, True
+    for path in files:
+        if path.startswith(DOC_PREFIXES):
+            continue
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        latest = st.st_atime if latest is None else max(latest, st.st_atime)
+        for point, options in mounts:
+            if path.startswith(point.rstrip("/") + "/"):
+                reliable = reliable and "noatime" not in options
+                break
+    when = None
+    if latest is not None:
+        when = datetime.fromtimestamp(latest, timezone.utc).isoformat(timespec="seconds")
+    return when, reliable
+
+
+def boot_time(stat_text):
+    """Ora dell'avvio (btime di /proc/stat), in secondi; None se non si legge."""
+    m = re.search(r"^btime (\d+)$", stat_text, re.MULTILINE)
+    return int(m.group(1)) if m else None
+
+
+def used_at_boot(last_used, booted):
+    """L'ultimo accesso è subito dopo l'avvio: il pacchetto serve all'avvio del nodo."""
+    if not last_used or booted is None:
+        return False
+    seen = datetime.fromisoformat(last_used).timestamp()
+    return booted <= seen <= booted + BOOT_WINDOW_SECONDS
+
+
 def is_idle(ctx, scan_ok=True):
     if ctx.get("needed_by"):
         return False  # serve a un servizio del nodo: mai inattivo
+    if ctx.get("boot_files"):
+        return False  # lo legge l'avvio del nodo, non un processo
+    if ctx.get("referenced_by"):
+        return False  # nominato da un cron o dallo script di un servizio
+    if not ctx.get("atime_reliable", True):
+        return False  # noatime: l'ultimo uso non si può sapere
     if not scan_ok:
         return False  # lettura dei processi non affidabile: nel dubbio in uso
     if ctx["binaries_running"] or ctx["libraries_loaded"] or ctx["listening"]:
@@ -495,7 +652,18 @@ def is_kernel_package(name):
     return name.startswith(KERNEL_PREFIXES)
 
 
-def package_context(pm, name, exes, mapped, listening, needed_by=None, scan_ok=True):
+def package_context(
+    pm,
+    name,
+    exes,
+    mapped,
+    listening,
+    needed_by=None,
+    scan_ok=True,
+    texts=(),
+    mounts=(),
+    booted=None,
+):
     files = [canonical(f) for f in pm.files(name) if f.startswith("/")]
     fileset = set(files)
     libs = [f for f in files if re.search(r"\.so(\.|$)", os.path.basename(f))]
@@ -518,7 +686,12 @@ def package_context(pm, name, exes, mapped, listening, needed_by=None, scan_ok=T
         "source": pm.source(name),
         # Servizio del nodo (o voce aggiunta) che ha bisogno di questo pacchetto.
         "needed_by": needed_by,
+        "boot_files": any(f.startswith(BOOT_PREFIXES) for f in files),
+        "referenced_by": referenced_by(binaries, texts),
     }
+    ctx["last_used"], ctx["atime_reliable"] = disk_usage(files, mounts)
+    if used_at_boot(ctx["last_used"], booted):
+        ctx["boot_files"] = True
     ctx["idle"] = is_idle(ctx, scan_ok)
     # La simulazione di rimozione serve solo per i pacchetti inattivi (è lenta).
     if ctx["idle"] and not is_kernel_package(name):
@@ -583,6 +756,10 @@ class Rpm:
 
     def source(self, name):
         return source_name(run(["rpm", "-q", "--qf", "%{SOURCERPM}\n", name]))
+
+    def removable(self, name):
+        # I pacchetti protetti li rifiuta dnf/zypper nella simulazione di rimozione.
+        return True
 
 
 class Dnf(Rpm):
@@ -688,6 +865,15 @@ class Apt:
                     owners.setdefault(canonical(line), set()).add(name)
         self.db = {"provides": provides, "owners": owners, "requires": requires}
         self.db["installed"] = set(self.packages)
+        # Essential, Protected, priorità required/important: la base del sistema, mai da togliere.
+        self.base = set()
+        out = run(
+            ["dpkg-query", "-W", "-f", "${Package}\\t${Essential}\\t${Protected}\\t${Priority}\\n"]
+        )
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 4 and ("yes" in parts[1:3] or parts[3] in ("required", "important")):
+                self.base.add(parts[0])
         return self.db
 
     def security_updates(self, os_info):
@@ -743,6 +929,9 @@ class Apt:
 
     def source(self, name):
         return self.packages.get(name, {}).get("source")
+
+    def removable(self, name):
+        return name not in getattr(self, "base", set())
 
     def removal(self, name):
         out = run(["apt-get", "-s", "-o", "Debug::NoLocking=1", "remove", name])
@@ -807,6 +996,28 @@ def required_closure(seeds, db):
     return origin
 
 
+def unused_candidates(pm, db, required, skip):
+    """Pacchetti senza CVE da esaminare per la rimozione: nessun pacchetto installato li
+    richiede, nessun servizio del nodo li usa, non sono base del sistema né kernel."""
+    wanted = set()
+    for pkg, caps in db["requires"].items():
+        for cap in caps:
+            found = db["provides"].get(cap) or (
+                db["owners"].get(canonical(cap)) if cap.startswith("/") else None
+            )
+            wanted.update(p for p in found or () if p != pkg)
+    names = [
+        name
+        for name in sorted(db["installed"])
+        if name not in wanted
+        and name not in required
+        and name not in skip
+        and not is_kernel_package(name)
+        and pm.removable(name)
+    ]
+    return names[:UNUSED_MAX]
+
+
 def node_units():
     """Unit attive o abilitate (servizi, socket, timer): quello che il nodo esegue."""
     units = set()
@@ -869,7 +1080,7 @@ def unit_paths(units):
     return paths
 
 
-def node_profile(extra, db):
+def node_profile(extra, db, unit_files=None):
     """Servizi del nodo, pacchetti che servono a farli girare e voci aggiunte a mano.
 
     `extra`: unit o pacchetti dichiarati in configurazione (servizi fuori da Kubernetes
@@ -895,6 +1106,8 @@ def node_profile(extra, db):
     missing += [u for u in sorted(units) if u in extra and not paths.get(u)]
     for pkg in extra_packages:
         seeds.setdefault(pkg, pkg + " (aggiunto)")
+    if unit_files is not None:
+        unit_files.extend(sorted({f for files in paths.values() for f in files}))
     required = required_closure(seeds, db)
     return {
         "unit_files": sum(1 for files in paths.values() if files),
@@ -1021,8 +1234,13 @@ def main(argv=None):
     updates = pm.security_updates(os_info)
     exes, mapped, container_processes = running_state()
     listening = listening_exes(exes)
-    profile = node_profile(extra, db)
+    unit_files = []
+    profile = node_profile(extra, db, unit_files)
     profile["container_processes"] = container_processes
+    texts = script_texts(unit_files)
+    mounts = mount_options(read_file("/proc/self/mountinfo"))
+    booted = boot_time(read_file("/proc/stat"))
+    profile["scripts_read"] = len(texts)
     # Controllo di coerenza: qualche file in uso dai processi del nodo deve appartenere a
     # un pacchetto (almeno la libc). Se no, la lettura non è affidabile e nessun pacchetto
     # viene dichiarato inattivo.
@@ -1039,7 +1257,27 @@ def main(argv=None):
             listening,
             profile["required"].get(name),
             profile["process_scan_ok"],
+            texts,
+            mounts,
+            booted,
         )
+    # Pacchetti senza CVE inutilizzati e rimovibili da soli: candidati alla rimozione.
+    unused = {}
+    for name in unused_candidates(pm, db, profile["required"], set(packages)):
+        ctx = package_context(
+            pm,
+            name,
+            exes,
+            mapped,
+            listening,
+            None,
+            profile["process_scan_ok"],
+            texts,
+            mounts,
+            booted,
+        )
+        if ctx["idle"] and ctx["removal_also_removes"] == []:
+            unused[name] = {"context": ctx}
     advisory_ids = {a["id"] for p in packages.values() for a in p["advisories"]}
 
     print(
@@ -1065,6 +1303,7 @@ def main(argv=None):
                     ),
                 },
                 "packages": dict(sorted(packages.items())),
+                "unused": dict(sorted(unused.items())),
             }
         )
     )

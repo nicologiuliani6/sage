@@ -86,6 +86,8 @@ def package(
             "units": units or {},
             "privileged_files": list(privileged),
             "required_by": [],
+            "boot_files": False,
+            "referenced_by": [],
             "idle": idle,
             "removal_also_removes": removal,
         },

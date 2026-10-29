@@ -35,6 +35,8 @@ OPA_CONTEXT_KEYS = (
     "listening",
     "units",
     "removal_also_removes",
+    "boot_files",
+    "referenced_by",
 )
 
 RecordFetcher = Callable[[str], dict[str, Any] | None]
@@ -85,7 +87,7 @@ def update_idle(
     """
     idle: dict[str, dict[str, Any]] = {}
     for node, report in reports.items():
-        for name, pkg in report.get("packages", {}).items():
+        for name, pkg in all_packages(report).items():
             if pkg.get("context", {}).get("idle"):
                 key = f"{node}|{name}"
                 old = previous.get(key)
@@ -101,13 +103,21 @@ def update_idle(
     return idle
 
 
-def idle_confirmed(entry: Any, policy, now: datetime) -> bool:
+def all_packages(report: dict[str, Any]) -> dict[str, Any]:
+    """Pacchetti con advisory e pacchetti senza CVE candidati alla rimozione ("unused")."""
+    return {**report.get("unused", {}), **report.get("packages", {})}
+
+
+def idle_confirmed(entry: Any, policy, now: datetime, last_used: str | None = None) -> bool:
+    """Inutilizzato da abbastanza controlli e giorni. `last_used` (atime dei file sul nodo)
+    copre l'uso che i controlli non vedono, come un cron di pochi secondi al giorno."""
     if not isinstance(entry, dict):
         return False
+    days = timedelta(days=policy.idle_days_required)
+    if last_used and now - datetime.fromisoformat(last_used) < days:
+        return False
     since = datetime.fromisoformat(entry["since"])
-    return entry.get("count", 0) >= policy.idle_scans_required and now - since >= timedelta(
-        days=policy.idle_days_required
-    )
+    return entry.get("count", 0) >= policy.idle_scans_required and now - since >= days
 
 
 def idle_label(policy) -> str:
@@ -289,7 +299,12 @@ class Analyzer:
                             ctx,
                             report.get("kernel", {}),
                             record,
-                            idle_confirmed(idle.get(f"{node}|{name}"), policy, self.now),
+                            idle_confirmed(
+                                idle.get(f"{node}|{name}"),
+                                policy,
+                                self.now,
+                                ctx.get("last_used"),
+                            ),
                             label,
                         )
                         for c in answer["conditions"]
@@ -325,7 +340,7 @@ class Analyzer:
         prepared: dict[tuple[str, str], tuple[list[CveResult], list[str]]] = {}
         for node, report in sorted(reports.items()):
             group = groups.get(node)
-            for name, pkg in sorted(report.get("packages", {}).items()):
+            for name, pkg in sorted(all_packages(report).items()):
                 evaluated = results.get((node, name), {})
                 cve_list = []
                 for cve in sorted(cve_severity(pkg)):
@@ -366,7 +381,7 @@ class Analyzer:
                             "name": name,
                             "context": {k: ctx.get(k) for k in OPA_CONTEXT_KEYS},
                             "idle_confirmed": idle_confirmed(
-                                idle.get(f"{node}|{name}"), policy, self.now
+                                idle.get(f"{node}|{name}"), policy, self.now, ctx.get("last_used")
                             ),
                         },
                         "cves": [
@@ -390,7 +405,9 @@ class Analyzer:
 
         decisions: dict[str, list[PackageDecision]] = {node: [] for node in reports}
         for (node, name), outcome in zip(keys, outcomes, strict=True):
-            pkg = reports[node]["packages"][name]
+            pkg = all_packages(reports[node])[name]
+            if not pkg.get("advisories") and outcome["action"] != "remove":
+                continue  # senza CVE si decide solo se togliere: niente da aggiornare
             cve_list, modules = prepared[(node, name)]
             decisions[node].append(
                 PackageDecision(
