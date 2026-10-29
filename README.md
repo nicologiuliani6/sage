@@ -30,8 +30,8 @@ stesso), rollback automatico in caso di errore, e da capo.
 Da un master del cluster, con `kubectl` da amministratore e agent SSH (`ssh -A`):
 
 ```bash
-curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage
-curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/SHA256SUMS
+curl -fsSLO https://github.com/nicologiuliani6/sage/releases/latest/download/sage
+curl -fsSLO https://github.com/nicologiuliani6/sage/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage
 ./sage --live --allow-remove
 ```
@@ -108,4 +108,9 @@ un eseguibile con chart, immagine e checksum già fissati, e allega `sage`, `sag
 
 ## Licenza
 
-Da definire.
+[PolyForm Noncommercial 1.0.0](LICENSE): uso, modifica e ridistribuzione liberi per qualunque
+scopo non commerciale (uso personale, studio, ricerca, enti senza scopo di lucro, scuole,
+pubblica amministrazione). L'uso commerciale richiede un accordo con l'autore.
+
+Nota: è una licenza *source-available*, non "open source" nel senso OSI. I componenti di terze
+parti usati da SAGE restano gratuiti e open source, ognuno con la sua licenza.

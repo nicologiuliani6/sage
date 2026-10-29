@@ -3,6 +3,7 @@ name = "sage"
 version = "0.2.2"
 description = "SAGE: SSVC-Aware Guarded Engine. CVE applicability and patch decisions with LLMs for Kubernetes nodes"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
     "ansible-core>=2.17.3,<2.18",

@@ -51,8 +51,8 @@ Entra su un master **con agent forwarding** (`ssh -A`): l'installer usa le tue c
 installare sui nodi la chiave dedicata a SAGE.
 
 ```bash
-curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/sage
-curl -fsSLO https://github.com/<owner>/sage/releases/latest/download/SHA256SUMS
+curl -fsSLO https://github.com/nicologiuliani6/sage/releases/latest/download/sage
+curl -fsSLO https://github.com/nicologiuliani6/sage/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing && chmod +x sage
 ./sage --live --allow-remove
 rm sage SHA256SUMS
