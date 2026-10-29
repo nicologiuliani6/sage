@@ -6,7 +6,8 @@
 #   kev_available             il catalogo CISA KEV è stato letto in questo giro
 #   package.name              nome del pacchetto
 #   package.context           contesto raccolto sul nodo (processi, librerie, porte, unit)
-#   package.idle_confirmed    inutilizzato da abbastanza scansioni consecutive
+#   package.idle_confirmed    inutilizzato da abbastanza scansioni consecutive e giorni
+#   cves[]                    vuoto per i pacchetti senza CVE: per loro conta solo "remove"
 #   cves[]                    kev, applicability.status, .verified, .justification
 #   proposal                  mitigazione verificata: action = "mitigate", mitigation.verified
 #
@@ -90,11 +91,17 @@ protected if {
 	glob.match(pattern, ["/"], input.package.name)
 }
 
+# Rimozione: mai la catena di avvio (nessun processo la usa, ma toglierla rompe il riavvio),
+# mai un pacchetto nominato da un cron o dallo script di un servizio.
 removal_safe if {
 	not protected
 	not is_kernel
+	not is_boot
 	input.package.idle_confirmed == true
 	ctx := input.package.context
+	ctx.boot_files == false # campo mancante (collector vecchio): nel dubbio non si toglie
+	is_array(ctx.referenced_by)
+	count(ctx.referenced_by) == 0
 	count(ctx.binaries_running) == 0
 	count(ctx.libraries_loaded) == 0
 	count(ctx.listening) == 0

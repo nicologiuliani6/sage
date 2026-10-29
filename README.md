@@ -9,7 +9,7 @@ davvero?"*, decide cosa fare e lo fa, un nodo alla volta.
 | `update` | la CVE si applica, oppure c'è un dubbio |
 | `not_affected` | la CVE non si applica, **verificato sul nodo**: nessun aggiornamento, viene scritto un VEX |
 | `mitigate` | si può disattivare ciò che la rende sfruttabile (es. bloccare un modulo del kernel) |
-| `remove` | il pacchetto è inutilizzato da giorni, nessun servizio ne ha bisogno e toglierlo non trascina via altro |
+| `remove` | il pacchetto è inutilizzato da giorni (nessun processo, cron o script lo usa e nessun suo file è stato letto), nessun servizio né l'avvio del nodo ne ha bisogno e toglierlo non trascina via altro; con `--allow-remove` anche i pacchetti inutilizzati senza CVE ([ADR-0022](docs/adr/0022-rimozione-pacchetti-inutilizzati.md)) |
 | `skip` | il nodo non appartiene a nessun gruppo configurato: non viene toccato |
 
 Un LLM legge i **dati pubblici** della CVE e ne estrae le condizioni di sfruttabilità; il nodo le
@@ -42,7 +42,7 @@ gruppi, endpoint LLM), installa SAGE nel cluster e si installa come comando di s
 | Opzione | Effetto |
 |---|---|
 | `--live` | modalità reale da subito (senza: simulazione, nessuna modifica ai nodi) |
-| `--allow-remove` | permette la rimozione dei pacchetti inutilizzati |
+| `--allow-remove` | permette la rimozione dei pacchetti inutilizzati, vulnerabili e non |
 | `--reinstall` | rifà l'installazione da zero, tenendo storico e cache dell'LLM |
 | `--resume` | segue il giro: stato e log di ogni nodo, uno dopo l'altro, fino a Ctrl+C |
 | `--dashboard` | apre la dashboard di sola lettura |

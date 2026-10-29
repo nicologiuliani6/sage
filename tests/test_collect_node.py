@@ -3,6 +3,7 @@
 import fnmatch
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -195,7 +196,7 @@ def fake_run(cmd):
     if cmd[:2] == ["rpm", "-q"]:
         return "0:1.0-1.el9\n"
     if cmd[:2] == ["rpm", "-ql"]:
-        return FILES[cmd[-1]]
+        return FILES.get(cmd[-1], "")
     if cmd[0] == "ss":
         return 'udp UNCONN 0 0 0.0.0.0:68 0.0.0.0:* users:(("NetworkManager",pid=42,fd=3))\n'
     if cmd[:2] == ["systemctl", "is-active"]:
@@ -801,3 +802,91 @@ def test_immutable_systems_are_refused(collector, monkeypatch, capsys, os_releas
 def test_ostree_booted_is_immutable(collector, monkeypatch):
     monkeypatch.setattr(collector.os.path, "exists", lambda p: p == "/run/ostree-booted")
     assert collector.immutable({"ID": "centos"}) == "rpm-ostree"
+
+
+def test_report_has_unused_section(report):
+    # nel finto nodo nessun pacchetto senza CVE passa la simulazione di rimozione
+    assert report["unused"] == {}
+    assert "scripts_read" in report["profile"]
+
+
+def test_cron_and_scripts_reference_binaries(collector):
+    texts = [
+        ("/etc/cron.d/backup", "0 3 * * * root /usr/bin/curl -s https://x\n"),
+        ("/usr/local/bin/job.sh", "#!/bin/sh\nrsync -a /a /b\nfoo-figlet\n"),
+    ]
+    assert collector.referenced_by(["/usr/bin/curl"], texts) == ["/etc/cron.d/backup"]
+    assert collector.referenced_by(["/usr/bin/rsync"], texts) == ["/usr/local/bin/job.sh"]
+    assert collector.referenced_by(["/usr/bin/figlet"], texts) == []  # "foo-figlet" è un altro
+
+
+def test_script_texts_skip_compiled_binaries(collector, tmp_path, monkeypatch):
+    monkeypatch.setattr(collector, "SCRIPT_GLOBS", ())
+    (tmp_path / "s.sh").write_text("curl x\n")
+    (tmp_path / "bin").write_bytes(b"\x7fELF\x00\x00curl")
+    texts = collector.script_texts([str(tmp_path / "s.sh"), str(tmp_path / "bin")])
+    assert [p for p, _ in texts] == [str(tmp_path / "s.sh")]
+
+
+def test_disk_usage_atime_and_noatime(collector, tmp_path):
+    f = tmp_path / "tool"
+    f.write_text("x")
+    os.utime(f, (1_700_000_000, 1_600_000_000))
+    relatime = collector.mount_options("1 0 0:1 / / rw,relatime - ext4 x rw\n")
+    when, reliable = collector.disk_usage([str(f), str(tmp_path / "missing")], relatime)
+    assert when == "2023-11-14T22:13:20+00:00" and reliable is True
+    noatime = collector.mount_options(f"1 0 0:1 / {tmp_path} rw,noatime - xfs x rw\n")
+    assert collector.disk_usage([str(f)], noatime)[1] is False
+    assert collector.disk_usage([], noatime) == (None, True)
+
+
+def test_is_idle_needs_no_boot_files_no_references_and_reliable_atime(collector):
+    ctx = {"binaries_running": [], "libraries_loaded": [], "listening": [], "units": {}}
+    assert collector.is_idle(ctx) is True
+    assert collector.is_idle({**ctx, "boot_files": True}) is False
+    assert collector.is_idle({**ctx, "referenced_by": ["/etc/cron.d/x"]}) is False
+    assert collector.is_idle({**ctx, "atime_reliable": False}) is False
+
+
+def test_unused_candidates_only_leaves_outside_services(collector):
+    class Pm:
+        def removable(self, name):
+            return name != "base-pkg"
+
+    db = {
+        "installed": {"app", "libdep", "figlet", "base-pkg", "linux-image-6.1", "svc"},
+        "requires": {"app": {"libdep"}, "figlet": set()},
+        "provides": {"libdep": {"libdep"}},
+        "owners": {},
+    }
+    got = collector.unused_candidates(Pm(), db, {"svc": "svc.service"}, {"app"})
+    assert got == ["figlet"]  # libdep serve ad app, svc a un servizio, app ha CVE
+
+
+def test_apt_base_packages_never_removable(collector, monkeypatch):
+    out = {
+        "dpkg-query -W -f ${Package}\\t${Essential}\\t${Protected}\\t${Priority}\\n": (
+            "bash\tyes\t\trequired\napt\t\tyes\timportant\nfiglet\t\t\toptional\n"
+        )
+    }
+    monkeypatch.setattr(collector, "run", lambda cmd: out.get(" ".join(cmd), ""))
+    monkeypatch.setattr(collector.glob, "glob", lambda p: [])
+    apt = collector.Apt()
+    apt.database()
+    assert not apt.removable("bash") and not apt.removable("apt") and apt.removable("figlet")
+
+
+def test_used_right_after_boot_is_boot_package(collector):
+    booted = collector.boot_time("cpu 1 2 3\nbtime 1700000000\nprocesses 9\n")
+    assert booted == 1_700_000_000
+    assert collector.used_at_boot("2023-11-14T22:20:00+00:00", booted) is True  # 7 min dopo
+    assert collector.used_at_boot("2023-11-15T22:13:20+00:00", booted) is False  # un giorno dopo
+    assert collector.used_at_boot(None, booted) is False
+    assert collector.used_at_boot("2023-11-14T22:20:00+00:00", None) is False
+
+
+def test_reading_docs_is_not_use(collector, monkeypatch, tmp_path):
+    doc = tmp_path / "changelog.gz"
+    doc.write_text("x")
+    monkeypatch.setattr(collector, "DOC_PREFIXES", (str(tmp_path) + "/",))
+    assert collector.disk_usage([str(doc)], []) == (None, True)

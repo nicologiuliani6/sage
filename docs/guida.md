@@ -60,9 +60,11 @@ rm sage SHA256SUMS
 
 - `--live`: modalità reale da subito. Finito il primo controllo, SAGE inizia ad aggiornare i
   nodi.
-- `--allow-remove`: SAGE può anche rimuovere i pacchetti inutilizzati (nessun processo li usa da
-  almeno 7 giorni, nessun servizio del nodo ne ha bisogno, la rimozione simulata non si porta
-  dietro altro, non protetti).
+- `--allow-remove`: SAGE può anche rimuovere i pacchetti inutilizzati, vulnerabili o no: nessun
+  processo, cron o script del nodo li usa e nessun loro file è stato letto da almeno 7 giorni,
+  nessun servizio né l'avvio del nodo ne ha bisogno, non sono base del sistema, la rimozione
+  simulata non si porta dietro altro, non protetti ([ADR-0022](adr/0022-rimozione-pacchetti-inutilizzati.md)).
+  Un attrezzo usato a mano di rado (es. un editor) si tiene con `protected_packages`.
 - Al primo avvio l'eseguibile si installa come comando di sistema `/usr/local/bin/sage`: da lì
   in poi basta `sage`.
 - Se `/tmp` è montata `noexec` (baseline CIS): `TMPDIR=~/.cache ./sage ...`.

@@ -11,6 +11,8 @@ idle_context := {
 	"listening": [],
 	"units": {"cockpit.socket": {"active": "inactive", "enabled": "disabled"}},
 	"removal_also_removes": [],
+	"boot_files": false,
+	"referenced_by": [],
 }
 
 base := {
@@ -183,3 +185,16 @@ test_userland_package_can_be_not_affected_for_non_use if {
 }
 
 test_boot_package_not_affected_for_other_reasons if act(boot_with(mitigated)) == "not_affected"
+
+test_no_remove_boot_chain if act(with_pkg(removable, {"name": "grub-pc"})) == "update"
+
+test_no_remove_if_owns_boot_files if act(with_ctx(removable, {"boot_files": true})) == "update"
+
+test_no_remove_if_named_by_cron if act(with_ctx(removable, {"referenced_by": ["/etc/cron.d/backup"]})) == "update"
+
+test_no_remove_if_collector_too_old if {
+	pkg := object.union(object.remove(removable.package, ["context"]), {"context": object.remove(idle_context, ["referenced_by"])})
+	act(object.union(object.remove(removable, ["package"]), {"package": pkg})) == "update"
+}
+
+test_remove_unused_package_without_cves if act(object.union(removable, {"cves": []})) == "remove"
