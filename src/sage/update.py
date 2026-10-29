@@ -22,12 +22,15 @@ import logging
 import os
 import re
 import subprocess
+import tarfile
 import tempfile
 import time
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from sage import __version__
 from sage.config import Config
@@ -115,6 +118,19 @@ def verify(workdir: Path, assets: dict[str, str], repository: str, chart: str) -
     if sums.get(chart) != digest:
         raise RuntimeError(f"checksum del chart {chart} non corrisponde")
     return workdir / chart
+
+
+def chart_image(chart: Path) -> tuple[str, str]:
+    """Immagine fissata nel chart della release (ci/release.sh): repository e digest.
+    Senza, l'aggiornamento cambierebbe solo il chart e lascerebbe girare il codice vecchio."""
+    with tarfile.open(chart) as tar:
+        member = next(m for m in tar.getmembers() if m.name.endswith("/values.yaml"))
+        values = yaml.safe_load(tar.extractfile(member).read())  # type: ignore[union-attr]
+    image = values.get("image") or {}
+    repository, digest = image.get("repository") or "", image.get("digest") or ""
+    if not repository or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("il chart non fissa l'immagine (repository e digest sha256)")
+    return repository, digest
 
 
 def helm(*args: str) -> subprocess.CompletedProcess:
@@ -237,6 +253,7 @@ def run(cfg: Config, kube: KubeApi, release: str, namespace: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         try:
             chart = verify(Path(tmp), assets, su.repository, f"sage-{version}.tgz")
+            repository, digest = chart_image(chart)
         except Exception as exc:  # noqa: BLE001
             log.error("release %s non verificata: %s", tag, exc)
             state["last"] = {"version": version, "ok": False, "detail": str(exc)[:300]}
@@ -254,6 +271,7 @@ def run(cfg: Config, kube: KubeApi, release: str, namespace: str) -> int:
         # bloccare per sempre aggiornamenti e rollback con un conflitto di server-side apply.
         proc = helm(
             "upgrade", release, str(chart), "-n", namespace, "--reset-then-reuse-values",
+            "--set", f"image.repository={repository}", "--set", f"image.digest={digest}",
             "--force-conflicts", "--description", description, "--wait", "--timeout", "10m",
         )  # fmt: skip
     ok = proc.returncode == 0 and wait_for_work(kube, release, before)

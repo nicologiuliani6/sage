@@ -1,9 +1,11 @@
 """Aggiornamento automatico di SAGE (ADR-0021)."""
 
 import subprocess
+import tarfile
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import yaml
 
 from sage import update
 from tests.conftest import base_config
@@ -56,7 +58,10 @@ class FakeKube:
         return self.store.get("lease")
 
 
-def setup(monkeypatch, *, verified=True, works=True, rollback_ok=True):
+DIGEST = "sha256:" + "a" * 64
+
+
+def setup(monkeypatch, *, verified=True, works=True, rollback_ok=True, pinned=True):
     cfg = base_config(self_update={"repository": "owner/sage", "channel": "minor"})
     kube = FakeKube()
     calls = []
@@ -70,8 +75,17 @@ def setup(monkeypatch, *, verified=True, works=True, rollback_ok=True):
             raise RuntimeError("firma non valida")
         return workdir / chart
 
+    def chart_image(chart):
+        if not pinned:
+            raise ValueError("il chart non fissa l'immagine (repository e digest sha256)")
+        return "ghcr.io/owner/sage", DIGEST
+
     def helm(*args):
         calls.append(args[0])
+        if args[0] == "upgrade":  # l'immagine della release, non quella dei values vecchi
+            assert (
+                f"image.digest={DIGEST}" in args and "image.repository=ghcr.io/owner/sage" in args
+            )
         if args[0] in ("upgrade", "rollback"):
             assert "--force-conflicts" in args
         out = '[{"revision": 7, "status": "deployed"}]' if args[0] == "history" else ""
@@ -79,6 +93,7 @@ def setup(monkeypatch, *, verified=True, works=True, rollback_ok=True):
         return subprocess.CompletedProcess(args, rc, out, "conflict" if rc else "")
 
     monkeypatch.setattr(update, "verify", verify)
+    monkeypatch.setattr(update, "chart_image", chart_image)
     monkeypatch.setattr(update, "helm", helm)
     monkeypatch.setattr(update, "wait_for_work", lambda kube, release, since: works)
     return cfg, kube, calls
@@ -215,3 +230,32 @@ def test_verify_refuses_missing_signature_and_wrong_checksum(tmp_path, monkeypat
         update.verify(tmp_path, {n: n for n in files}, "owner/sage", "sage-0.8.1.tgz")
     identity = cosign[0][cosign[0].index("--certificate-identity-regexp") + 1]
     assert identity.startswith(r"^https://github\.com/owner/sage/\.github/workflows/publish\.yml")
+
+
+def test_release_without_pinned_image_is_refused(monkeypatch):
+    """Senza immagine fissata nel chart si aggiornerebbe solo il chart: si rifiuta."""
+    cfg, kube, calls = setup(monkeypatch, pinned=False)
+    assert update.run(cfg, kube, "sage", "sage") == 1
+    assert "upgrade" not in calls
+    assert "rifiutato" in kube.history[0]
+
+
+def _chart(tmp_path, image):
+    src = tmp_path / "sage"
+    src.mkdir()
+    (src / "values.yaml").write_text(yaml.safe_dump({"image": image, "dryRun": True}))
+    path = tmp_path / "sage-0.8.1.tgz"
+    with tarfile.open(path, "w:gz") as tar:
+        tar.add(src / "values.yaml", arcname="sage/values.yaml")
+    return path
+
+
+def test_chart_image_reads_repository_and_digest(tmp_path):
+    chart = _chart(tmp_path, {"repository": "ghcr.io/owner/sage", "digest": DIGEST})
+    assert update.chart_image(chart) == ("ghcr.io/owner/sage", DIGEST)
+
+
+def test_chart_image_without_digest_fails(tmp_path):
+    chart = _chart(tmp_path, {"repository": "", "digest": "", "tag": ""})
+    with pytest.raises(ValueError):
+        update.chart_image(chart)
