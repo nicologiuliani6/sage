@@ -43,3 +43,17 @@ Un pacchetto inutilizzato è superficie d'attacco anche senza CVE note oggi.
   `idle_days_required` giorni.
 - Il controllo legge cron e script del nodo e fa uno `stat` dei file dei candidati: al massimo
   300 pacchetti senza CVE per nodo.
+
+## Aggiornamento (2026-10-29): avvio con relatime e controllo dei pod dopo l'intervento
+
+Prova sul cluster di laboratorio con soglia 0 giorni: SAGE ha tolto `iptables` da tre worker.
+kubelet lo usa all'avvio e carica così `nf_conntrack`; dopo il riavvio kube-proxy non partiva e
+la rete del cluster (calico) nemmeno, ma il nodo era Ready e la remediation risultava riuscita.
+
+- **relatime**: una lettura all'avvio non aggiorna l'atime se quello vecchio ha meno di un
+  giorno. Un accesso tra 24 ore prima dell'avvio e 30 minuti dopo vale come "forse usato
+  all'avvio": mai inutilizzato.
+- **Dopo l'intervento** non basta il nodo Ready: tutti i pod dei DaemonSet del nodo (kube-proxy,
+  rete, storage...) devono tornare pronti entro 10 minuti. Altrimenti è un errore: rollback
+  (i pacchetti tolti vengono reinstallati) e, se l'intervento aveva riavviato il nodo, un nuovo
+  riavvio per ricaricare i moduli.
