@@ -249,9 +249,12 @@ def run(cfg: Config, kube: KubeApi, release: str, namespace: str) -> int:
         before = (kube.read_json(f"{release}-report") or {}).get("generated_at")
         previous = last_good_revision(release, namespace)
         description = f"sage (automatico): aggiornamento a {version}"
+        # --force-conflicts: gli oggetti della release sono di SAGE e la configurazione sta nei
+        # values. Un campo cambiato a mano con kubectl (es. la ConfigMap della config) non deve
+        # bloccare per sempre aggiornamenti e rollback con un conflitto di server-side apply.
         proc = helm(
-            "upgrade", release, str(chart), "-n", namespace,
-            "--reset-then-reuse-values", "--description", description, "--wait", "--timeout", "10m",
+            "upgrade", release, str(chart), "-n", namespace, "--reset-then-reuse-values",
+            "--force-conflicts", "--description", description, "--wait", "--timeout", "10m",
         )  # fmt: skip
     ok = proc.returncode == 0 and wait_for_work(kube, release, before)
     if ok:
@@ -260,11 +263,23 @@ def run(cfg: Config, kube: KubeApi, release: str, namespace: str) -> int:
         log.info("SAGE %s al lavoro: aggiornamento riuscito", version)
     else:
         why = (proc.stderr or "").strip()[:300] or "nessun report nuovo: SAGE non lavora"
-        log.error("aggiornamento a %s non riuscito (%s): rollback a %s", version, why, previous)
+        rollback = "nessuna revisione buona a cui tornare"
         if previous:
-            helm("rollback", release, previous, "-n", namespace, "--wait", "--timeout", "10m")
-        state["last"] = {"version": version, "ok": False, "detail": why}
+            back = helm(
+                "rollback", release, previous, "-n", namespace,
+                "--force-conflicts", "--wait", "--timeout", "10m",
+            )  # fmt: skip
+            # Un rollback fallito va detto: altrimenti il log promette una versione che non c'è.
+            rollback = (
+                f"rollback a {previous}"
+                if back.returncode == 0
+                else f"rollback a {previous} NON riuscito: {(back.stderr or '').strip()[:300]}"
+            )
+        log.error("aggiornamento a %s non riuscito (%s): %s", version, why, rollback)
+        state["last"] = {"version": version, "ok": False, "detail": why, "rollback": rollback}
         _skip(state, tag, now)
-        record(kube, release, "aggiornamento annullato", [f"versione {version}"], why)
+        record(
+            kube, release, "aggiornamento annullato", [f"versione {version}"], f"{why}; {rollback}"
+        )
     kube.write_json(f"{release}-update", state)
     return 0 if ok else 1
