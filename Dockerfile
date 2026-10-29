@@ -32,7 +32,7 @@ RUN apt-get update \
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 
 WORKDIR /opt/sage
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable && rm -rf /root/.cache
 # Versione della release, dal tag (ci/publish.sh); vuota nelle build di sviluppo.
