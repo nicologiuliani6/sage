@@ -28,6 +28,11 @@ rules:
       - {{ include "sage.fullname" . }}-history
       - {{ include "sage.fullname" . }}-controller
       - {{ include "sage.fullname" . }}-cycles
+      {{- /* report e stato grandi si dividono in parti (src/sage/kube.py, PARTS_MAX) */}}
+      {{- range $i := until 9 }}
+      - {{ include "sage.fullname" $ }}-report-part-{{ add1 $i }}
+      - {{ include "sage.fullname" $ }}-state-part-{{ add1 $i }}
+      {{- end }}
     verbs: ["get"]
   # Pagina Log: solo i pod di SAGE, solo in questo namespace (è una Role).
   - apiGroups: [""]

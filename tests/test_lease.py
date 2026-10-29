@@ -116,3 +116,53 @@ def test_post_event_builds_a_real_event_and_never_raises():
 
     k.core = SimpleNamespace(create_namespaced_event=broken)
     k.post_event("node7", "SageQuarantine", "x")  # nessuna eccezione
+
+
+class FakeConfigMaps:
+    """API delle ConfigMap in memoria, con gli oggetti veri del client."""
+
+    def __init__(self):
+        self.cms = {}
+
+    def read_namespaced_config_map(self, name, ns):
+        if name not in self.cms:
+            raise ApiException(status=404)
+        return self.cms[name]
+
+    def create_namespaced_config_map(self, ns, body):
+        self.cms[body.metadata.name] = body
+
+    def replace_namespaced_config_map(self, name, ns, body):
+        self.cms[name] = body
+
+    def delete_namespaced_config_map(self, name, ns):
+        del self.cms[name]
+
+
+def big_report(n):
+    import random
+
+    rnd = random.Random(n)  # dati che il gzip non comprime: tanti nodi diversi
+    return {"nodes": {f"n{i}": [rnd.random() for _ in range(40)] for i in range(n)}}
+
+
+def test_large_json_split_across_configmaps_and_read_back():
+    import sage.kube as kube_mod
+
+    k = Kube.__new__(Kube)
+    k.namespace, k._client, k.core = "sage", client, FakeConfigMaps()
+    small = {"a": 1}
+    k.write_json("sage-report", small)
+    assert k.read_json("sage-report") == small and list(k.core.cms) == ["sage-report"]
+    big = big_report(3000)
+    k.write_json("sage-report", big)
+    parts = sorted(k.core.cms)
+    assert len(parts) > 1 and all(
+        len(c.binary_data["data.json.gz"]) <= kube_mod.PART_BYTES for c in k.core.cms.values()
+    )
+    assert k.read_json("sage-report") == big
+    k.write_json("sage-report", small)  # di nuovo piccolo: le parti avanzate spariscono
+    assert list(k.core.cms) == ["sage-report"] and k.read_json("sage-report") == small
+    k.write_json("sage-report", big)
+    del k.core.cms["sage-report-part-1"]  # scrittura interrotta: niente miscugli
+    assert k.read_json("sage-report") is None
