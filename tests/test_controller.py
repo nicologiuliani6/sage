@@ -780,3 +780,20 @@ def test_failure_stops_new_nodes_but_running_ones_finish():
         cluster.finish(name)
     ctl.steps(T0)
     assert not [n for n in running_now(cluster) if n.startswith("w")]  # il gruppo resta fermo
+
+
+def test_cycle_restarts_after_sage_upgrade_but_never_mid_node(monkeypatch):
+    """Piani di una versione vecchia (aggiornamento a metà giro): si ricomincia con un
+    controllo nuovo, ma solo quando nessun nodo è a metà intervento."""
+    cluster = Cluster()
+    ctl = make(cluster)
+    ctl.step(T0)
+    run_scan(cluster, ctl, T0, {"w1": PLAN, "w2": PLAN, "w3": EMPTY, "m1": EMPTY})
+    assert "avviata su w1" in ctl.step(T0)
+    monkeypatch.setattr(controller, "__version__", "9.9.9")
+    assert "in corso su w1" in ctl.step(T0)  # w1 a metà: si aspetta
+    cluster.finish(last_fix(cluster))
+    msg = ctl.step(T0)
+    assert "SAGE 9.9.9: giro da capo" in msg and "controllo completo" in msg
+    assert ctl.load()["cycle"]["version"] == "9.9.9"
+    assert "controllo in corso" in ctl.step(T0)  # stessa versione: il giro continua

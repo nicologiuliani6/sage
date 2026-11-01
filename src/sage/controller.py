@@ -30,7 +30,7 @@ from typing import Any
 
 import yaml
 
-from sage import act, alerts
+from sage import __version__, act, alerts
 from sage.config import Config
 from sage.inventory import assign_groups
 from sage.kube import KubeApi
@@ -171,6 +171,11 @@ class Controller:
         if cycle is None:
             return self._start_cycle(doc, now, "primo giro")
         phase = cycle["phase"]
+        if phase != "pause" and cycle.get("version") != __version__ and not self._jobs_running():
+            # Piani calcolati da un'altra versione di SAGE (aggiornata a metà giro): una
+            # correzione delle decisioni deve valere subito. Si ricomincia con un controllo
+            # nuovo, mai a metà di un nodo o di un controllo.
+            return self._start_cycle(doc, now, f"SAGE {__version__}: giro da capo")
         if phase == "pause":
             if self.kube.pop_flag(f"{self.release}-scan-now"):
                 return self._start_cycle(doc, now, "richiesto a mano")
@@ -210,6 +215,7 @@ class Controller:
         previous = doc["cycle"] or {}
         doc["cycle"] = {
             "id": previous.get("id", 0) + 1,
+            "version": __version__,
             "phase": "scan",
             "reason": why,
             "started": _iso(now),
@@ -219,6 +225,14 @@ class Controller:
             "results": {},
         }
         return self._launch_scan(doc, now)
+
+    def _jobs_running(self) -> bool:
+        """Un controllo o una remediation in corso (Job attivo)."""
+        return any(
+            j.active
+            for role in (SCAN_ROLE, "remediate")
+            for j in self.kube.list_jobs(self._selector(role))
+        )
 
     def _launch_scan(self, doc: dict[str, Any], now: datetime) -> str:
         cycle = doc["cycle"]
