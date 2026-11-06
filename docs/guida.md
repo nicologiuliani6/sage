@@ -121,6 +121,18 @@ ssh -L 8080:localhost:8080 <utente>@<master>
 sage --dashboard          # sul master; poi http://localhost:8080 sul tuo computer
 ```
 
+| Pagina | |
+|---|---|
+| Nodi | ![Nodi: una scheda per nodo con piano, giro e ultima remediation](screenshots/nodi.png) |
+| Giri | ![Giri: esiti degli ultimi giri](screenshots/giri.png) |
+| Salute | ![Salute: componenti di SAGE e un quadrato per server](screenshots/salute.png) |
+| Log | ![Log: il playbook di remediation di un nodo](screenshots/log.png) |
+| Storico | ![Storico: modifiche a SAGE e download del VEX](screenshots/storico.png) |
+
+Le opzioni del comando `sage`:
+
+![sage --help](screenshots/installer.png)
+
 **Aggiornamenti di SAGE**: SAGE si aggiorna da solo una volta al giorno, in pausa tra due giri,
 alle release firmate dello stesso canale (`self_update.channel`: `minor` per default, `patch`,
 `off`). Dopo l'aggiornamento aspetta un controllo completo, quanto serve; se il SAGE nuovo non

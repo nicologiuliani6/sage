@@ -25,6 +25,23 @@ Un **controllore sempre acceso** fa il giro dei nodi: controllo completo, poi re
 alla volta (gruppi in ordine, canary per primo, master per ultimi, mai un nodo che modifica se
 stesso), rollback automatico in caso di errore, e da capo.
 
+## Come si presenta
+
+La dashboard di sola lettura su un cluster di prova (1 master, 3 worker e un nodo per l'LLM), dopo
+che SAGE ha sistemato tutti i nodi:
+
+![Panoramica della dashboard: 5 nodi su 5 a posto, nessuna CVE grave aperta](docs/screenshots/panoramica.png)
+
+Lo stesso cluster al primo controllo, con le CVE sfruttate attivamente (KEV) ancora da sistemare
+e le ondate in attesa, e durante la remediation, con il canary in corso e gli altri nodi già a posto:
+
+| Primo controllo | Remediation in corso |
+|---|---|
+| ![Primo controllo: 4 nodi critici, 8 CVE KEV aperte](docs/screenshots/primo-controllo.png) | ![Remediation: il canary in corso, gli altri nodi a posto](docs/screenshots/remediation-in-corso.png) |
+
+Le altre pagine (nodi, giri, salute, log, storico) e l'installer sono in
+[docs/screenshots](docs/screenshots) e nella [guida operativa](docs/guida.md#uso-quotidiano).
+
 ## Installazione
 
 Da un master del cluster, con `kubectl` da amministratore e agent SSH (`ssh -A`):
